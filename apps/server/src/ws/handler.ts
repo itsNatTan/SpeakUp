@@ -6,13 +6,9 @@ export class MessageHandler {
   private readonly sendQueue: SendQueue;
   private listener: WebSocket | null;
   private clientKeyMap: Record<string, WebSocket>;
-  private storageBuffer: Record<
-    string,
-    { start: Date | null; data: ArrayBuffer[] }
-  >;
+  private storageBuffer: Record<string, { start: Date | null; data: ArrayBuffer[] }>;
 
   private lastSenderKey: string | undefined = undefined;
-  // TODO: Make this less hacky
   private bufferKey: string | null = null;
 
   constructor(
@@ -28,8 +24,6 @@ export class MessageHandler {
   public getMessageHandler(data: RawData) {
     const message = data.toString();
     if (message.startsWith('RTS')) {
-      // TODO: Make this less hacky
-      // Add 'hash' to prevent duplicate names from erroring
       const key = `${message.slice(3)}-${random.generateLowercase(5)}`;
       this.bufferKey = key;
       return this.handleRTS;
@@ -40,7 +34,6 @@ export class MessageHandler {
       case 'LISTEN':
         return this.handleLISTEN;
       default:
-        console.log('Received binary audio data');
         return this.handleAudio;
     }
   }
@@ -50,31 +43,22 @@ export class MessageHandler {
   }
 
   private whichClient(ws: WebSocket) {
-    // TODO: Figure out a better data structure
-    return Object.entries(this.clientKeyMap).find(
-      ([, client]) => client === ws,
-    )?.[0];
+    return Object.entries(this.clientKeyMap).find(([, client]) => client === ws)?.[0];
   }
 
   private getClientName(ws: WebSocket) {
     const key = this.whichClient(ws);
-    if (!key) {
-      return;
-    }
+    if (!key) return;
     return key.slice(0, key.length - 6);
   }
 
   private flushBuffer(client: WebSocket) {
     const clientKey = this.whichClient(client);
-    if (!clientKey) {
-      return;
-    }
+    if (!clientKey) return;
+
     const buffer = this.storageBuffer[clientKey];
-    if (!buffer.start) {
-      return;
-    }
-    const duration = new Date().getTime() - buffer.start.getTime();
-    console.log(`Client ${clientKey} transmitted for ${duration}ms`);
+    if (!buffer.start) return;
+
     const filename = `${buffer.start.getTime()}-${clientKey}.wav`;
     const data = Buffer.concat(buffer.data.map((d) => Buffer.from(d)));
 
@@ -83,67 +67,106 @@ export class MessageHandler {
     return { filename, data };
   }
 
-  private handleRTS(ws: WebSocket) {
-    // Register client
+  private handleRTS = (ws: WebSocket) => {
     this.sendQueue.registerClient(ws);
     this.trackClient(ws, this.bufferKey!);
-    // Initialize storage buffer
     this.storageBuffer[this.whichClient(ws)!] = { start: null, data: [] };
-    // Signal client to transmit
-    if (this.sendQueue.hasPriority(ws)) {
+
+    const isFirstInQueue = this.sendQueue.hasPriority(ws);
+    const hasListener = this.listener && this.listener.readyState === WebSocket.OPEN;
+
+    if (isFirstInQueue && hasListener) {
       this.storageBuffer[this.whichClient(ws)!].start = new Date();
       ws.send('CTS');
     }
-  }
+  };
 
-  public handleSTOP(ws: WebSocket) {
+  public handleSTOP = (ws: WebSocket) => {
+    // If the listener disconnected
     if (this.listener === ws) {
       this.listener = null;
-      console.log(`Disconnected listener for room ${this.roomCode}`);
+
+      if (this.lastSenderKey) {
+        const senderWs = this.clientKeyMap[this.lastSenderKey];
+        if (senderWs) {
+          this.sendQueue.prependClient(senderWs);
+          senderWs.send('STOP');
+        }
+        this.lastSenderKey = undefined;
+      }
+
       return;
     }
+
+    // If a student is stopping
     const hasPriority = this.sendQueue.hasPriority(ws);
     if (hasPriority) {
-      // Client is currently transmitting
-      // Remove client from queue
       this.lastSenderKey = undefined;
-      // Flush buffer and push file to callback
+
       const file = this.flushBuffer(ws);
       if (file) {
         this.onIncomingFile?.(file.filename, file.data);
       }
-      // Signal listener that current client is done
+
       this.listener?.send('CLEAR');
     }
-    const nextClient = this.sendQueue.removeClient(ws);
-    // Signal next client to transmit
-    if (nextClient) {
-      this.storageBuffer[this.whichClient(nextClient)!].start = new Date();
-      nextClient.send('CTS');
-    }
-  }
 
-  private handleLISTEN(ws: WebSocket) {
-    // Only allow one listener at a time
+    const nextClient = this.sendQueue.removeClient(ws);
+    if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
+      const key = this.whichClient(nextClient);
+      if (key) {
+        this.storageBuffer[key].start = new Date();
+        nextClient.send('CTS');
+      }
+    }
+  };
+
+  private handleLISTEN = (ws: WebSocket) => {
     this.listener?.close();
     this.listener = ws;
-    console.log(`Registered listener for room ${this.roomCode}`);
-  }
 
-  private handleAudio(ws: WebSocket, data: RawData) {
-    const sender = this.whichClient(ws);
-    // Guard clause
-    if (!this.sendQueue.hasPriority(ws)) {
-      console.log('Client has no priority');
-      return;
+    ws.on('close', () => {
+      if (this.listener === ws) {
+        this.listener = null;
+
+        if (this.lastSenderKey) {
+          const senderWs = this.clientKeyMap[this.lastSenderKey];
+          if (senderWs) {
+            this.sendQueue.prependClient(senderWs);
+            senderWs.send('STOP');
+          }
+          this.lastSenderKey = undefined;
+        }
+      }
+    });
+
+    const currentSenderKey = this.lastSenderKey;
+    if (currentSenderKey) {
+      const clientName = currentSenderKey.slice(0, currentSenderKey.length - 6);
+      ws.send(`FROM${clientName}`);
     }
-    // Whenever a new client starts transmitting,
-    // let the listener know
+
+    const nextClient = this.sendQueue.peekClient?.();
+    if (nextClient && this.sendQueue.hasPriority(nextClient)) {
+      const key = this.whichClient(nextClient);
+      if (key) {
+        this.storageBuffer[key].start = new Date();
+        nextClient.send('CTS');
+      }
+    }
+  };
+
+  private handleAudio = (ws: WebSocket, data: RawData) => {
+    const sender = this.whichClient(ws);
+    if (!this.sendQueue.hasPriority(ws)) return;
+
     if (sender !== this.lastSenderKey) {
       this.listener?.send(`FROM${this.getClientName(ws)}`);
       this.lastSenderKey = sender!;
     }
+
     this.storageBuffer[sender!].data.push(data as ArrayBuffer);
     this.listener?.send(data);
-  }
+  };
 }
+

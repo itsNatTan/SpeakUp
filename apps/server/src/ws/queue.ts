@@ -26,4 +26,16 @@ export class SendQueue {
   public hasPriority(client: Client): boolean {
     return this.clients[0] === client;
   }
+
+  public peekClient(): WebSocket | null {
+    return this.clients.length > 0 ? this.clients[0] : null;
+  }
+
+  public prependClient(ws: WebSocket) {
+    // Remove it if it already exists
+    this.clients = this.clients.filter((client) => client !== ws);
+    // Add to front
+    this.clients.unshift(ws);
+  }
+
 }

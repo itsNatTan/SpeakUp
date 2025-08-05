@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 const Home: React.FC = () => {
   return (
     <div className="w-full h-screen flex flex-col justify-center items-center gap-y-8">
-      <h1 className="text-4xl font-semibold">cs3103-project</h1>
+      <h1 className="text-4xl font-semibold">SpeakUp</h1>
       <hr className="border w-96" />
       <p className="text-xl">I am a/an&hellip;</p>
       <div className="flex gap-x-4">

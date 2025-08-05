@@ -4,8 +4,8 @@ type StreamingState = 'off' | 'on' | 'waiting';
 
 export const useStreaming = (wsEndpoint: string, username: string = '') => {
   const [state, setState] = useState<StreamingState>('off');
-
   const [wsClient, setWsClient] = useState<WebSocket | null>(null);
+
   useEffect(() => {
     const client = new WebSocket(wsEndpoint);
 
@@ -19,15 +19,20 @@ export const useStreaming = (wsEndpoint: string, username: string = '') => {
 
     client.onmessage = ({ data }) => {
       console.log(`Received message => ${data}`);
-      if (data == 'CTS') {
-        setState(() => 'on');
+
+      if (data === 'CTS') {
+        setState('on');
+      }
+
+      if (data === 'STOP') {
+        setState('waiting');
       }
     };
 
     setWsClient(client);
 
     return () => {
-      console.log('Closing');
+      console.log('Closing WebSocket');
       client.close();
       setWsClient(null);
     };
@@ -45,7 +50,7 @@ export const useStreaming = (wsEndpoint: string, username: string = '') => {
   const send = useCallback(
     (data: Blob) => {
       if (state !== 'on') {
-        // Don't send packets before CTS is received
+        // 🚫 Don't send if not actively allowed
         return;
       }
       rawSend(data);
@@ -54,14 +59,15 @@ export const useStreaming = (wsEndpoint: string, username: string = '') => {
   );
 
   const beginStream = useCallback(() => {
-    setState(() => 'waiting');
+    setState('waiting');
     rawSend(`RTS${username}`);
   }, [rawSend, username]);
 
   const endStream = useCallback(() => {
     rawSend('STOP');
-    setState(() => 'off');
+    setState('off');
   }, [rawSend]);
 
   return { state, send, beginStream, endStream };
 };
+

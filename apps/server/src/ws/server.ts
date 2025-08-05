@@ -1,21 +1,18 @@
-import { Server } from 'http';
+import { Server as HttpServer } from 'http';
+import { Server as HttpsServer } from 'https';
 import { WebSocketServer } from 'ws';
 import roomService from '../services/room.service';
 
-// Three uppercase letters followed by three numbers
 const ROOM_PATH_REGEX = /^[A-Z]{3}\d{3}$/;
 
-export const registerWebsocketForServer = (server: Server) => {
+export const registerWebsocketForServer = (server: HttpServer | HttpsServer) => {
   const wss = new WebSocketServer({ server });
 
   wss.on('connection', (ws, req) => {
+    const roomCode = req.url?.slice(1);
     console.log(`Client connected to ${req.url}`);
 
-    // Remove leading slash
-    const roomCode = req.url?.slice(1);
-
     if (!roomCode || !ROOM_PATH_REGEX.test(roomCode)) {
-      console.log('Invalid room code');
       ws.send('Invalid room code');
       ws.close();
       return;
@@ -23,7 +20,6 @@ export const registerWebsocketForServer = (server: Server) => {
 
     const wsHandler = roomService.getWsHandler(roomCode);
     if (!wsHandler) {
-      console.log('Room not found');
       ws.send('Room not found');
       ws.close();
       return;
@@ -39,9 +35,9 @@ export const registerWebsocketForServer = (server: Server) => {
       wsHandler.handleSTOP(ws);
     });
 
-    // Send welcome message
-    ws.send('Hello from server!');
+    ws.send('Hello from WebSocket!');
   });
 
   return wss;
 };
+

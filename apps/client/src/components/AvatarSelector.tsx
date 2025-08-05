@@ -16,23 +16,64 @@ type Props = {
 const AvatarSelector: React.FC<Props> = ({ onSubmit, onCancel }) => {
   const [username, setUsername] = useState(generateName());
   const [value, setValue] = useState('');
+  const [isTyping, setIsTyping] = useState(true);
+  const [isEdited, setIsEdited] = useState(false);
+
   const icon = useMemo(() => getIcon(username), [username]);
-  const { background, foreground, border } = getColorClasses(
-    getColor(username),
-  );
+  const { background, foreground, border } = getColorClasses(getColor(username));
 
   useEffect(() => {
     setValue('');
-    // Print letter by letter
+    setIsTyping(true);
+    setIsEdited(false);
     let i = 0;
     const interval = setInterval(() => {
       setValue(username.slice(0, i));
       i++;
       if (i > username.length) {
         clearInterval(interval);
+        setIsTyping(false);
       }
     }, 20);
+    return () => clearInterval(interval);
   }, [username]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setValue(e.target.value);
+    if (!isEdited) setIsEdited(true);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (isTyping || isEdited) return;
+
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      setValue('');
+      setIsEdited(true);
+    } else if (e.key.length === 1) {
+      e.preventDefault();
+      setValue(e.key);
+      setIsEdited(true);
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pasted = e.clipboardData.getData('text').trim();
+    if (pasted.length > 0) {
+      setValue(pasted);
+      setIsEdited(true);
+    }
+  };
+
+  const handleSubmit = () => {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      alert('Username cannot be blank.');
+      return;
+    }
+    onSubmit(trimmed);
+  };
 
   return (
     <div className="flex flex-col gap-y-8 items-center justify-center">
@@ -57,8 +98,10 @@ const AvatarSelector: React.FC<Props> = ({ onSubmit, onCancel }) => {
         <input
           className="text-lg font-medium bg-gray-100 rounded-lg px-4 py-2 text-gray-500"
           type="text"
-          readOnly
           value={value}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
         />
         <button
           className={clsx(
@@ -77,7 +120,7 @@ const AvatarSelector: React.FC<Props> = ({ onSubmit, onCancel }) => {
             'rounded-lg font-medium',
             'hover:bg-blue-600 rounded-xl',
           )}
-          onClick={() => onSubmit(username)}
+          onClick={handleSubmit}
         >
           Let's Go!
         </button>
