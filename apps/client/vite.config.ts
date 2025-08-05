@@ -6,10 +6,10 @@ export default defineConfig({
   server: {
     port: 443,
     host: true,
-    https: {
-      key: fs.readFileSync('../../key.pem'),
-      cert: fs.readFileSync('../../cert.pem'),
-    },
+    // https: {
+    //   key: fs.readFileSync('../../key.pem'),
+    //   cert: fs.readFileSync('../../cert.pem'),
+    // },
   },
   plugins: [react()],
 });
