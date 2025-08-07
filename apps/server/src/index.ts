@@ -15,7 +15,14 @@ import { registerWebsocketForServer } from './ws/server';
 
 const app = new Hono();
 
-app.use(cors()); // CORS open for dev
+app.use(
+  '*',
+  cors({
+    origin: '*',
+    allowHeaders: ['Content-Type'],
+    allowMethods: ['GET', 'POST', 'OPTIONS'],
+  })
+);
 app.notFound(handlePathNotFoundErrors);
 app.onError(combineErrorHandlers([handleClientErrors]));
 app.get('/', (c) => c.text('Hello from secure server!'));
