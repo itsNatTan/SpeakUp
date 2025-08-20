@@ -25,7 +25,7 @@ export const useStreaming = (wsEndpoint: string, username: string = '') => {
       }
 
       if (data === 'STOP') {
-        setState('waiting');
+        setState('off');
       }
     };
 
