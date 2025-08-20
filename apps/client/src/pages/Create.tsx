@@ -48,8 +48,8 @@ const Create: React.FC = () => {
           Create New Room
         </button>
         {/* Note: this is a placeholder for future functionality.*/}
-        
-        {/* <label className="flex items-center gap-x-2">
+
+        <label className="flex items-center gap-x-2">
           <input
             type="checkbox"
             checked={enableCloudRecording}
@@ -59,7 +59,7 @@ const Create: React.FC = () => {
         </label>
         <p>
           <strong>Note:</strong> You cannot change this later.
-        </p> */}
+        </p>
       </div>
       <div className="flex gap-x-4 items-center">
         <hr className="w-40" />
