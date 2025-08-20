@@ -91,7 +91,7 @@ export class MessageHandler {
       if (this.lastSenderKey) {
         const senderWs = this.clientKeyMap[this.lastSenderKey];
         if (senderWs) {
-          this.sendQueue.prependClient(senderWs);
+          this.sendQueue.removeClient(senderWs);
           senderWs.send('STOP');
         }
         this.lastSenderKey = undefined;
