@@ -42,6 +42,7 @@ export const useLiveAudio = (wsEndpoint: string) => {
     };
 
     client.onmessage = async (event) => {
+      console.log('Received message =>', event.data);
       if (event.data === 'CLEAR') {
         // New stream coming next, reset
         setPlaying(null);
