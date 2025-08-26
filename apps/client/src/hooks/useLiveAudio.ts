@@ -81,6 +81,7 @@ export const useLiveAudio = (wsEndpoint: string) => {
 
   const stop = useCallback(() => {
     setListening(false);
+    setPlaying(null);
     // Recreate new client
     setWsClient(new WebSocket(wsEndpoint));
   }, [wsEndpoint]);
