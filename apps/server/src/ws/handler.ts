@@ -86,6 +86,7 @@ export class MessageHandler {
   public handleSTOP = (ws: WebSocket) => {
     // If the listener disconnected
     if (this.listener === ws) {
+      this.listener?.send('CLEAR');
       this.listener = null;
 
       if (this.lastSenderKey) {
