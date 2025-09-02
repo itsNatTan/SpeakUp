@@ -42,8 +42,8 @@ export const useLiveAudio = (wsEndpoint: string) => {
     };
 
     client.onmessage = async (event) => {
-      console.log('Received message =>', event.data);
       if (event.data === 'CLEAR' || event.data === 'STOP') {
+        console.log('Received message =>', event.data);
         // New stream coming next, reset
         setPlaying(null);
         resetAudio();
@@ -53,6 +53,7 @@ export const useLiveAudio = (wsEndpoint: string) => {
 
       if (typeof event.data === 'string' && event.data.startsWith('FROM')) {
         const sender = event.data.slice(4);
+        console.log('Receiving stream from  =>', sender);
         setPlaying(sender);
         return;
       }
