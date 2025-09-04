@@ -20,6 +20,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     playing,
     listen,
     stop: stopListening,
+    skip,
   } = useLiveAudio(`${WS_PROTOCOL}://${SERVER_HOST}/${roomCode}`);
 
   const handleClick = useCallback(() => {
@@ -61,6 +62,16 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
           onClick={handleClick}
         >
           <Icon icon={listening ? 'tabler:volume' : 'tabler:volume-off'} />
+        </button>
+        <button
+          className={clsx(
+            'w-40 h-40 rounded-full text-white font-bold',
+            'text-7xl flex justify-center items-center',
+            'transition-colors duration-500',
+          )}
+          onClick={skip}
+        >
+          Skip 
         </button>
         <p>{listening ? <>Tuning in&hellip;</> : 'Everyone is muted'}</p>
       </div>
