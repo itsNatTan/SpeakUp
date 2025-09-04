@@ -68,6 +68,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
             'w-40 h-40 rounded-full text-white font-bold',
             'text-7xl flex justify-center items-center',
             'transition-colors duration-500',
+            'bg-blue-500 hover:bg-blue-600',
           )}
           onClick={skip}
         >
