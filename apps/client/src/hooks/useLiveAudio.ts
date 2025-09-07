@@ -89,8 +89,13 @@ export const useLiveAudio = (wsEndpoint: string) => {
 
   const skip = useCallback(() => {
     stop();
+    sleep(1000)
     listen();
   }, [wsEndpoint]);
+
+  async function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
   return { ref, listening, playing, listen, stop, skip };
 };
