@@ -89,7 +89,7 @@ export const useLiveAudio = (wsEndpoint: string) => {
 
   const skip = useCallback(() => {
     stop();
-    sleep(1000)
+    sleep(10000)
     listen();
   }, [wsEndpoint]);
 
