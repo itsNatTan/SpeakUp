@@ -3,23 +3,25 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { MediaProvider } from '../providers/media';
 import { MIMETYPE } from '../utils/constants';
 
+type QueuedMsg = string | ArrayBufferLike | Blob;
+
 export const useLiveAudio = (wsEndpoint: string) => {
   const [playing, setPlaying] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
-  const [wsClient, setWsClient] = useState<WebSocket | null>(null);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const providerRef = useRef<MediaProvider | null>(null);
 
-  // (1) Create / attach the MediaProvider once
+  const wsRef = useRef<WebSocket | null>(null);
+  const isOpenRef = useRef(false);
+  const outboundQueueRef = useRef<QueuedMsg[]>([]);
+  const reconnectTimerRef = useRef<number | null>(null);
+
+  // ---- Media pipeline: create once and attach to <audio> ----
   useEffect(() => {
     if (!audioRef.current) return;
-
-    // Create only once per mount
-    if (!providerRef.current) {
-      providerRef.current = new MediaProvider(MIMETYPE);
-      providerRef.current.attach(audioRef.current);
-    }
+    providerRef.current = new MediaProvider(MIMETYPE);
+    providerRef.current.attach(audioRef.current);
 
     return () => {
       providerRef.current?.dispose();
@@ -27,73 +29,124 @@ export const useLiveAudio = (wsEndpoint: string) => {
     };
   }, []);
 
-  // (2) Create WS client whenever endpoint changes (or when you “stop” and recreate)
-  useEffect(() => {
+  // ---- WebSocket connection mgmt with auto-reconnect ----
+  const connect = useCallback(() => {
+    // Clean any previous
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try { wsRef.current.close(); } catch {}
+    }
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
     const ws = new WebSocket(wsEndpoint);
-    setWsClient(ws);
+    ws.binaryType = 'arraybuffer';
+    wsRef.current = ws;
+    isOpenRef.current = false;
 
     ws.onopen = () => {
-      console.log('Connected to server');
-    };
-
-    ws.onclose = () => {
-      console.log('Disconnected from server');
-      setListening(false);
+      isOpenRef.current = true;
+      // Flush any queued messages (e.g., early LISTEN click)
+      while (outboundQueueRef.current.length) {
+        const msg = outboundQueueRef.current.shift()!;
+        if (msg instanceof Blob) {
+          ws.send(msg);
+        } else {
+          ws.send(msg as string | ArrayBufferLike);
+        }
+      }
+      console.log('[WS] open');
     };
 
     ws.onmessage = async (event) => {
+      const data = event.data;
+
       // Control messages
-      if (event.data === 'CLEAR' || event.data === 'STOP') {
-        console.log('Received message =>', event.data);
+      if (data === 'CLEAR' || data === 'STOP') {
+        console.log('[WS] control =>', data);
         setPlaying(null);
-        // Rebuild the pipeline cleanly instead of removing/changing type mid-session
+        // Rebuild playback chain safely (no remove()/changeType() races)
         await providerRef.current?.reinitialize();
         return;
       }
-
-      if (typeof event.data === 'string' && event.data.startsWith('FROM')) {
-        const sender = event.data.slice(4);
-        console.log('Receiving stream from  =>', sender);
+      if (typeof data === 'string' && data.startsWith('FROM')) {
+        const sender = (data as string).slice(4);
         setPlaying(sender);
         return;
       }
+      if (typeof data === 'string') {
+        // Unknown text message; ignore
+        return;
+      }
 
-      // Audio data
-      if (event.data instanceof Blob) {
-        const ab = await (event.data as Blob).arrayBuffer();
-        await providerRef.current?.buffer(ab);
-      } else if (event.data instanceof ArrayBuffer) {
-        await providerRef.current?.buffer(event.data as ArrayBuffer);
+      // Audio payloads
+      try {
+        if (data instanceof ArrayBuffer) {
+          await providerRef.current?.buffer(data);
+        } else if (data instanceof Blob) {
+          const ab = await (data as Blob).arrayBuffer();
+          await providerRef.current?.buffer(ab);
+        }
+      } catch (e) {
+        console.warn('[Audio] buffer error, rebuilding pipeline', e);
+        await providerRef.current?.reinitialize();
       }
     };
 
-    return () => {
-      try {
-        ws.close();
-      } catch {}
+    ws.onerror = (e) => {
+      console.warn('[WS] error', e);
+    };
+
+    ws.onclose = () => {
+      console.log('[WS] close');
+      isOpenRef.current = false;
+      setListening(false);
+      // Attempt auto-reconnect after short backoff (desktop convenience)
+      reconnectTimerRef.current = window.setTimeout(() => connect(), 800);
     };
   }, [wsEndpoint]);
 
-  // (3) Start listening: send command and perform one play() from a user gesture
-  const listen = useCallback(() => {
-    if (wsClient?.readyState === WebSocket.OPEN) {
-      wsClient.send('LISTEN');
+  // Connect on mount / when endpoint changes
+  useEffect(() => {
+    connect();
+    return () => {
+      if (reconnectTimerRef.current) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      try { wsRef.current?.close(); } catch {}
+    };
+  }, [connect]);
+
+  // ---- Safe send with queueing until OPEN ----
+  const send = useCallback((msg: QueuedMsg) => {
+    const ws = wsRef.current;
+    if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+      if (msg instanceof Blob) ws.send(msg);
+      else ws.send(msg as string | ArrayBufferLike);
+    } else {
+      outboundQueueRef.current.push(msg);
     }
+  }, []);
+
+  // ---- Public controls ----
+  const listen = useCallback(() => {
+    // Mark UI state
     setListening(true);
+    // Send LISTEN now or when socket opens
+    send('LISTEN');
 
-    // One user-gesture-triggered play() to satisfy mobile autoplay policy.
-    audioRef.current?.play().catch(() => {
-      // If it rejects (no gesture), the next user interaction will succeed.
-    });
-  }, [wsClient]);
+    // One user-gesture-triggered play for mobile autoplay policy
+    audioRef.current?.play().catch(() => {});
+  }, [send]);
 
-  // (4) Stop: flip state and recreate the WS (provider stays attached)
   const stop = useCallback(() => {
     setListening(false);
     setPlaying(null);
-    // Recreate a fresh WS connection; provider remains for future playback
-    setWsClient(new WebSocket(wsEndpoint));
-  }, [wsEndpoint]);
+    // Tell server to stop; keep the same socket (no new WS here!)
+    send('STOP');
+  }, [send]);
 
   return { ref: audioRef, listening, playing, listen, stop };
 };
