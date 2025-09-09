@@ -1,3 +1,4 @@
+// src/hooks/useLiveAudio.ts
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MediaProvider } from '../providers/media';
 import { MIMETYPE } from '../utils/constants';
@@ -7,47 +8,46 @@ export const useLiveAudio = (wsEndpoint: string) => {
   const [listening, setListening] = useState(false);
   const [wsClient, setWsClient] = useState<WebSocket | null>(null);
 
-  const ref = useRef<HTMLAudioElement>(null);
-  const resetAudio = useCallback(() => {
-    // Safe as we only call this function when ref is not null
-    ref.current!.pause();
-    ref.current!.currentTime = 0;
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const providerRef = useRef<MediaProvider | null>(null);
+
+  // (1) Create / attach the MediaProvider once
+  useEffect(() => {
+    if (!audioRef.current) return;
+
+    // Create only once per mount
+    if (!providerRef.current) {
+      providerRef.current = new MediaProvider(MIMETYPE);
+      providerRef.current.attach(audioRef.current);
+    }
+
+    return () => {
+      providerRef.current?.dispose();
+      providerRef.current = null;
+    };
   }, []);
 
+  // (2) Create WS client whenever endpoint changes (or when you “stop” and recreate)
   useEffect(() => {
-    setWsClient(new WebSocket(wsEndpoint));
-  }, [wsEndpoint]);
+    const ws = new WebSocket(wsEndpoint);
+    setWsClient(ws);
 
-  useEffect(() => {
-    const audio = ref.current;
-    if (!audio) {
-      return;
-    }
-
-    const provider = new MediaProvider(MIMETYPE);
-    audio.src = provider.sourceUrl;
-
-    const client = wsClient;
-    if (!client) {
-      return;
-    }
-
-    client.onopen = () => {
+    ws.onopen = () => {
       console.log('Connected to server');
     };
 
-    client.onclose = () => {
+    ws.onclose = () => {
       console.log('Disconnected from server');
       setListening(false);
     };
 
-    client.onmessage = async (event) => {
+    ws.onmessage = async (event) => {
+      // Control messages
       if (event.data === 'CLEAR' || event.data === 'STOP') {
         console.log('Received message =>', event.data);
-        // New stream coming next, reset
         setPlaying(null);
-        resetAudio();
-        await provider.reinitialize();
+        // Rebuild the pipeline cleanly instead of removing/changing type mid-session
+        await providerRef.current?.reinitialize();
         return;
       }
 
@@ -58,34 +58,42 @@ export const useLiveAudio = (wsEndpoint: string) => {
         return;
       }
 
-      // Guard clause
-      if (typeof event.data === 'string') {
-        return;
+      // Audio data
+      if (event.data instanceof Blob) {
+        const ab = await (event.data as Blob).arrayBuffer();
+        await providerRef.current?.buffer(ab);
+      } else if (event.data instanceof ArrayBuffer) {
+        await providerRef.current?.buffer(event.data as ArrayBuffer);
       }
-      const blob = event.data as Blob;
-      await provider.buffer(await blob.arrayBuffer());
-      audio.play();
     };
 
     return () => {
-      provider.dispose();
-      client.close();
+      try {
+        ws.close();
+      } catch {}
     };
-  }, [resetAudio, wsClient]);
+  }, [wsEndpoint]);
 
+  // (3) Start listening: send command and perform one play() from a user gesture
   const listen = useCallback(() => {
     if (wsClient?.readyState === WebSocket.OPEN) {
       wsClient.send('LISTEN');
     }
     setListening(true);
+
+    // One user-gesture-triggered play() to satisfy mobile autoplay policy.
+    audioRef.current?.play().catch(() => {
+      // If it rejects (no gesture), the next user interaction will succeed.
+    });
   }, [wsClient]);
 
+  // (4) Stop: flip state and recreate the WS (provider stays attached)
   const stop = useCallback(() => {
     setListening(false);
     setPlaying(null);
-    // Recreate new client
+    // Recreate a fresh WS connection; provider remains for future playback
     setWsClient(new WebSocket(wsEndpoint));
   }, [wsEndpoint]);
 
-  return { ref, listening, playing, listen, stop };
+  return { ref: audioRef, listening, playing, listen, stop };
 };
