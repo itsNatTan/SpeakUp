@@ -19,15 +19,19 @@ import { registerWebsocketForServer } from './ws/server';
 
 const app = new Hono();
 
+const allowed = new Set<string>([
+  'https://main.d1zxivhorbkhbd.amplifyapp.com',
+  'https://speakupfyp.space',
+])
+
 // CORS: keep permissive for now; tighten to specific origins when ready
-app.use(
-  '*',
-  cors({
-    origin: '*',
-    allowHeaders: ['Content-Type'],
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
-  })
-);
+app.use('/api/*', cors({
+  origin: (origin) => (origin && allowed.has(origin)) ? origin : '',
+  allowMethods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowHeaders: ['Content-Type','Authorization'],
+  credentials: true,   // set to false if you don’t use cookies/auth
+  maxAge: 86400,
+}))
 
 // Basic routes
 app.get('/', (c) => c.text('Hello from secure server!')); // text can stay the same
