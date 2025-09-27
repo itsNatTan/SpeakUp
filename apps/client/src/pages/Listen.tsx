@@ -20,7 +20,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     playing,
     listen,
     stop: stopListening,
-  } = useLiveAudio(`${WS_PROTOCOL}://${SERVER_HOST}/${roomCode}`);
+  } = useLiveAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
 
   const handleClick = useCallback(() => {
     if (listening) {

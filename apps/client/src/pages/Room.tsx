@@ -14,7 +14,7 @@ const Room: React.FC = () => {
   const { room: roomCode } = useParams<{ room: string }>();
   const username = stores.common.getUsername();
   const { state, send, beginStream, endStream } = useStreaming(
-    `${WS_PROTOCOL}://${SERVER_HOST}/${roomCode}`,
+    `${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`,
     username ?? '',
   );
   const { start, stop } = useAudioRecording({ onData: send });
