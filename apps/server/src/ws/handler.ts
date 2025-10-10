@@ -121,6 +121,7 @@ export class MessageHandler {
 
       const wasPriority = this.sendQueue.hasPriority(ws);
       this.sendQueue.removeClient(ws);
+      console.log('At handleRTS');
 
       if (wasPriority || this.lastSenderKey === k || this.currentCtsKey === k) {
         this.lastSenderKey = undefined;
@@ -228,7 +229,6 @@ export class MessageHandler {
       (this.currentCtsKey && senderKey === this.currentCtsKey) ||
       this.sendQueue.hasPriority(ws) ||
       (this.lastSenderKey && senderKey === this.lastSenderKey);
-    console.log('audio from', senderKey, 'allowed?', allowed, 'cts', this.currentCtsKey, 'head?', this.sendQueue.hasPriority(ws));
     if (!allowed) return;
 
     // Refresh UI marker if needed (harmless duplicate)
