@@ -104,12 +104,12 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
           disabled={!listening || !playing || cooldown}
           onClick={handleSkip}
           aria-disabled={!listening || !playing || cooldown}
-          aria-label="Skip current speaker (S)"
+          aria-label="Skip current speaker"
           title={listening ? (playing ? 'Skip (S)' : 'No active speaker to skip') : 'Start listening to enable skip'}
         >
           <div className="flex items-center gap-2">
             <Icon icon="tabler:player-skip-forward" />
-            <span>Skip speaker</span>
+            <span>Skip speaker (S)</span>
           </div>
         </button>
       </div>

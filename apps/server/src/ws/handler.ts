@@ -222,13 +222,13 @@ export class MessageHandler {
 
   private handleAudio = (ws: WebSocket, data: RawData) => {
     const senderKey = this.whichClient(ws)!;
-
+    
     // Accept audio if CTS owner OR queue head OR previously marked speaker.
     const allowed =
       (this.currentCtsKey && senderKey === this.currentCtsKey) ||
       this.sendQueue.hasPriority(ws) ||
       (this.lastSenderKey && senderKey === this.lastSenderKey);
-
+    console.log('audio from', senderKey, 'allowed?', allowed, 'cts', this.currentCtsKey, 'head?', this.sendQueue.hasPriority(ws));
     if (!allowed) return;
 
     // Refresh UI marker if needed (harmless duplicate)
