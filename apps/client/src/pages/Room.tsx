@@ -14,12 +14,12 @@ const Room: React.FC = () => {
   const { room: roomCode } = useParams<{ room: string }>();
   const username = stores.common.getUsername();
 
-  const { state, connected, send, beginStream, endStream } = useStreaming(
+  const { state, connected, send, beginStream, endStream, recMime } = useStreaming(
     `${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`,
     username ?? '',
   );
 
-  const { start, stop } = useAudioRecording({ onData: send });
+  const { start, stop } = useAudioRecording({ onData: send, mimeOverride: recMime});
   const navigate = useNavigate();
 
   const [timeRemaining, setTimeRemaining] = useState(Number.MAX_SAFE_INTEGER);
@@ -76,7 +76,7 @@ const Room: React.FC = () => {
   };
 
   const buttonDisabled =
-    !connected || (state === 'waiting' && transmitting) || timeRemaining <= 0;
+    !connected || timeRemaining <= 0;
 
   return (
     <div className="space-y-4 text-center">
