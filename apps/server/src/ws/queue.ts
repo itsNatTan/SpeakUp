@@ -4,22 +4,27 @@ export class SendQueue {
   private clients: Client[] = [];
 
   public registerClient(client: Client): void {
-    this.clients.push(client);
+    if (!this.contains(client)) this.clients.push(client);
   }
 
   public removeClient(client: Client): Client | undefined {
+    const idx = this.clients.indexOf(client);
+    if (idx === -1) {
+      // Not in queue; nothing to remove
+      return undefined;
+    }
+
     let retVal: Client | undefined = undefined;
-    if (this.hasPriority(client)) {
-      // Current sender is done transmitting,
-      // we need to signal the next client
+    if (idx === 0) {
+      // Current sender is done transmitting → signal next if any
       retVal = this.clients[1];
     } else {
       // A waiting sender cancels transmission
-      // No need to signal anything
-      console.log('Client cancelled RTS');
+      // (No noisy log here; this is expected sometimes)
+      // console.log('Client cancelled RTS');
     }
-    // Remove the client from the queue
-    this.clients = this.clients.filter((c) => c !== client);
+
+    this.clients.splice(idx, 1);
     return retVal;
   }
 
@@ -27,15 +32,22 @@ export class SendQueue {
     return this.clients[0] === client;
   }
 
-  public peekClient(): WebSocket | null {
+  public peekClient(): Client | null {
     return this.clients.length > 0 ? this.clients[0] : null;
   }
 
-  public prependClient(ws: WebSocket) {
+  public prependClient(ws: Client) {
     // Remove it if it already exists
     this.clients = this.clients.filter((client) => client !== ws);
     // Add to front
     this.clients.unshift(ws);
   }
 
+  public contains(client: Client): boolean {
+    return this.clients.indexOf(client) !== -1;
+  }
+
+  public size(): number {
+    return this.clients.length;
+  }
 }

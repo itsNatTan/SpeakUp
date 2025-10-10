@@ -10,10 +10,8 @@ export class MessageHandler {
   private clientKeyMap: Record<string, WebSocket>;
   private storageBuffer: Record<string, BufferSlot>;
 
-  // Active speaker tracking
-  private lastSenderKey: string | undefined = undefined;     // legacy/UX (set when we know who's "talking")
-  private currentCtsKey: string | undefined = undefined;      // authoritative CTS owner
-
+  private lastSenderKey: string | undefined = undefined;   // UI/legacy
+  private currentCtsKey: string | undefined = undefined;    // authoritative CTS owner
   private bufferKey: string | null = null;
 
   constructor(
@@ -48,21 +46,17 @@ export class MessageHandler {
   private trackClient(ws: WebSocket, key: string) {
     this.clientKeyMap[key] = ws;
   }
-
   private whichClient(ws: WebSocket) {
     return Object.entries(this.clientKeyMap).find(([, client]) => client === ws)?.[0];
   }
-
   private getClientName(ws: WebSocket) {
     const key = this.whichClient(ws);
     if (!key) return;
-    return key.slice(0, key.length - 6); // "<name>-abcde" -> "<name>"
+    return key.slice(0, key.length - 6);
   }
-
   private ensureBufferKey(key: string) {
     if (!this.storageBuffer[key]) this.storageBuffer[key] = { start: null, data: [] };
   }
-
   private flushBuffer(client: WebSocket) {
     const clientKey = this.whichClient(client);
     if (!clientKey) return;
@@ -71,20 +65,17 @@ export class MessageHandler {
 
     const filename = `${buffer.start.getTime()}-${clientKey}.wav`;
     const data = Buffer.concat((buffer.data || []).map((d) => Buffer.from(d)));
-
-    // Reset buffer
     this.storageBuffer[clientKey] = { start: null, data: [] };
     return { filename, data };
   }
 
-  // ---- Centralized CTS grant: ensure head-of-queue, atomically mark CTS/active, then CLEAR->FROM->CTS ----
+  // Grant CTS and prep listener (CLEAR→FROM→CTS). Also mark CTS owner.
   private grantCTS = (client: WebSocket) => {
     if (!this.listener || this.listener.readyState !== WebSocket.OPEN) return;
-
     const key = this.whichClient(client);
     if (!key) return;
 
-    // Ensure they are truly the queue head to align with hasPriority()
+    // align queue head with this client (avoid race with hasPriority)
     if (!this.sendQueue.hasPriority(client)) {
       this.sendQueue.removeClient(client);
       this.sendQueue.prependClient(client);
@@ -93,12 +84,10 @@ export class MessageHandler {
     this.ensureBufferKey(key);
     this.storageBuffer[key].start = new Date();
 
-    // *** ATOMIC PROMOTION ***
-    // Predeclare them as the CTS owner *and* the "current speaker" to avoid early packet drops.
+    // Mark active before CTS to accept early frames
     this.currentCtsKey = key;
     this.lastSenderKey = key;
 
-    // Reset listener pipeline, then announce, then grant CTS
     try { this.listener.send('CLEAR'); } catch {}
     const name = this.getClientName(client);
     try { this.listener.send(`FROM${name}`); } catch {}
@@ -109,40 +98,19 @@ export class MessageHandler {
 
   private handleRTS = (ws: WebSocket) => {
     this.sendQueue.registerClient(ws);
+
+    // Assign key for this client (with provided name)
     this.trackClient(ws, this.bufferKey!);
 
     const key = this.whichClient(ws)!;
     this.ensureBufferKey(key);
 
-    // Clean up on socket close
-    ws.on('close', () => {
-      const k = this.whichClient(ws);
-      if (!k) return;
+    // Cleanup on close
+    ws.on('close', () => this.cleanupOnClose(ws));
 
-      const wasPriority = this.sendQueue.hasPriority(ws);
-      this.sendQueue.removeClient(ws);
-      console.log('At handleRTS');
-
-      if (wasPriority || this.lastSenderKey === k || this.currentCtsKey === k) {
-        this.lastSenderKey = undefined;
-        this.currentCtsKey = undefined;
-        try { this.listener?.send('CLEAR'); } catch {}
-
-        const next = this.sendQueue.peekClient?.();
-        if (next && this.sendQueue.hasPriority(next) && this.listener && this.listener.readyState === WebSocket.OPEN) {
-          this.grantCTS(next);
-        }
-      }
-
-      delete this.clientKeyMap[k];
-      delete this.storageBuffer[k];
-    });
-
-    const isFirstInQueue = this.sendQueue.hasPriority(ws);
+    const isFirst = this.sendQueue.hasPriority(ws);
     const hasListener = this.listener && this.listener.readyState === WebSocket.OPEN;
-
-    // Empty-queue -> first joiner
-    if (isFirstInQueue && hasListener) {
+    if (isFirst && hasListener) {
       this.grantCTS(ws);
     }
   };
@@ -170,7 +138,6 @@ export class MessageHandler {
     const senderKey = this.whichClient(ws);
 
     if (senderKey && (hasPriority || senderKey === this.currentCtsKey)) {
-      // Active teardown
       this.lastSenderKey = undefined;
       this.currentCtsKey = undefined;
 
@@ -187,14 +154,12 @@ export class MessageHandler {
   };
 
   private handleLISTEN = (ws: WebSocket) => {
-    // Swap listener
     try { this.listener?.close(); } catch {}
     this.listener = ws;
 
     ws.on('close', () => {
       if (this.listener === ws) {
         this.listener = null;
-
         if (this.currentCtsKey) {
           const senderWs = this.clientKeyMap[this.currentCtsKey];
           if (senderWs) {
@@ -207,39 +172,63 @@ export class MessageHandler {
       }
     });
 
-    // If someone is queued, grant CTS immediately
     const nextClient = this.sendQueue.peekClient?.();
     if (nextClient && this.sendQueue.hasPriority(nextClient)) {
       this.grantCTS(nextClient);
       return;
     }
 
-    // Best-effort UI hint if someone had been speaking
     if (this.lastSenderKey) {
       const clientName = this.lastSenderKey.slice(0, this.lastSenderKey.length - 6);
       try { ws.send(`FROM${clientName}`); } catch {}
     }
   };
 
+  // >>>>>> AUTO-REGISTER ON FIRST AUDIO <<<<<<
   private handleAudio = (ws: WebSocket, data: RawData) => {
-    const senderKey = this.whichClient(ws)!;
-    
-    // Accept audio if CTS owner OR queue head OR previously marked speaker.
+    let senderKey = this.whichClient(ws);
+
+    // If this socket never called RTS, register it now.
+    if (!senderKey) {
+      // Give it a temporary key (anonymous) to keep pipeline flowing
+      const anonKey = `Anon-${random.generateLowercase(5)}`;
+      this.trackClient(ws, anonKey);
+      this.ensureBufferKey(anonKey);
+
+      // If nobody is queued and a listener exists, make this socket the head and grant CTS.
+      if (!this.sendQueue.contains(ws)) this.sendQueue.registerClient(ws);
+      if (this.listener && this.listener.readyState === WebSocket.OPEN) {
+        if (this.sendQueue.peekClient() === ws || this.sendQueue.size() === 1) {
+          this.grantCTS(ws); // sets currentCtsKey/lastSenderKey, CLEAR→FROM→CTS
+        } else {
+          // Not head yet → move it to head to match CTS owner
+          this.sendQueue.prependClient(ws);
+          this.grantCTS(ws);
+        }
+      }
+
+      senderKey = this.whichClient(ws);
+    }
+
+    // Gate: accept if CTS owner OR queue head OR last announced speaker
     const allowed =
       (this.currentCtsKey && senderKey === this.currentCtsKey) ||
       this.sendQueue.hasPriority(ws) ||
       (this.lastSenderKey && senderKey === this.lastSenderKey);
+
+    // Debug (keep while testing)
+    // console.log('[AUDIO]', 'sender=', senderKey, 'allowed=', allowed, 'cts=', this.currentCtsKey, 'isHead=', this.sendQueue.hasPriority(ws), 'last=', this.lastSenderKey);
+
     if (!allowed) return;
 
-    // Refresh UI marker if needed (harmless duplicate)
+    // First packet refresh (harmless duplicate)
     if (senderKey !== this.lastSenderKey) {
-      const name = this.getClientName(ws);
+      const name = this.getClientName(ws) || 'Speaker';
       try { this.listener?.send(`FROM${name}`); } catch {}
-      this.lastSenderKey = senderKey;
+      this.lastSenderKey = senderKey!;
     }
 
-    this.ensureBufferKey(senderKey);
-    this.storageBuffer[senderKey].data.push(data as ArrayBuffer);
+    this.storageBuffer[senderKey!].data.push(data as ArrayBuffer);
     try { this.listener?.send(data); } catch {}
   };
 
@@ -280,5 +269,28 @@ export class MessageHandler {
     if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
       this.grantCTS(nextClient);
     }
+  };
+
+  // Cleanup helper used by RTS close handler
+  private cleanupOnClose = (ws: WebSocket) => {
+    const k = this.whichClient(ws);
+    if (!k) return;
+
+    const wasPriority = this.sendQueue.hasPriority(ws);
+    this.sendQueue.removeClient(ws);
+
+    if (wasPriority || this.lastSenderKey === k || this.currentCtsKey === k) {
+      this.lastSenderKey = undefined;
+      this.currentCtsKey = undefined;
+      try { this.listener?.send('CLEAR'); } catch {}
+
+      const next = this.sendQueue.peekClient?.();
+      if (next && this.sendQueue.hasPriority(next) && this.listener && this.listener.readyState === WebSocket.OPEN) {
+        this.grantCTS(next);
+      }
+    }
+
+    delete this.clientKeyMap[k];
+    delete this.storageBuffer[k];
   };
 }
