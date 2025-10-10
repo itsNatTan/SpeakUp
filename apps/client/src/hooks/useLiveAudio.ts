@@ -3,22 +3,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { MediaProvider } from '../providers/media';
 
 // Decide playback MIME (what the server should send & MediaProvider should buffer).
-// Use MediaSource.isTypeSupported() since this is the *playback* pipeline.
 function pickPlaybackMime(): string | undefined {
   const MS = (window as any).MediaSource;
-  // If MSE isn't available, let the provider decide (or fallback to <audio> src).
   if (!MS || typeof MS.isTypeSupported !== 'function') return undefined;
 
   const mp4Candidates = [
     'audio/mp4; codecs="mp4a.40.2"', // AAC-LC
-    'audio/mp4', // broad
+    'audio/mp4',
   ];
   const webmCandidates = [
     'audio/webm; codecs="opus"',
     'audio/webm',
   ];
 
-  // Lightweight UA hint: prefer MP4 on iOS/iPadOS Safari.
   const ua = navigator.userAgent || '';
   const seemsSafariIOS =
     /iPad|iPhone|iPod/.test(ua) ||
@@ -29,8 +26,6 @@ function pickPlaybackMime(): string | undefined {
 
   for (const t of primary) if (MS.isTypeSupported(t)) return t;
   for (const t of secondary) if (MS.isTypeSupported(t)) return t;
-
-  // No strong support signaled; let provider fall back.
   return undefined;
 }
 
@@ -48,26 +43,23 @@ export const useLiveAudio = (wsEndpoint: string) => {
   const outboundQueueRef = useRef<QueuedMsg[]>([]);
   const reconnectTimerRef = useRef<number | null>(null);
 
-  // --- Decide format once (you can also recompute per mount if you prefer)
   const FORMAT: string | undefined = pickPlaybackMime();
 
   // ---- Media pipeline: create once and attach to <audio> ----
   useEffect(() => {
     if (!audioRef.current) return;
-    // Pass the chosen format into MediaProvider
-    providerRef.current = new MediaProvider(FORMAT ?? 'audio/webm; codecs="opus"');
+    providerRef.current = new MediaProvider(FORMAT);
     providerRef.current.attach(audioRef.current);
 
     return () => {
       providerRef.current?.dispose();
       providerRef.current = null;
     };
-    // FORMAT is stable for a session; if you want hot-swap, add it to deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---- WebSocket connection mgmt with auto-reconnect ----
   const connect = useCallback(() => {
-    // Clean any previous
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       try { wsRef.current.close(); } catch {}
     }
@@ -84,15 +76,13 @@ export const useLiveAudio = (wsEndpoint: string) => {
     ws.onopen = () => {
       isOpenRef.current = true;
 
-      // Tell the server which container to stream (important if it can do both)
-      // Example protocol: "FORMAT audio/mp4; codecs=\"mp4a.40.2\"" or "FORMAT audio/webm; codecs=opus"
+      // Let server know the preferred container
       if (FORMAT) {
         try {
           ws.send(`FORMAT ${FORMAT}`);
         } catch {}
       }
 
-      // Flush any queued messages (e.g., early LISTEN click)
       while (outboundQueueRef.current.length) {
         const msg = outboundQueueRef.current.shift()!;
         if (msg instanceof Blob) ws.send(msg);
@@ -108,7 +98,6 @@ export const useLiveAudio = (wsEndpoint: string) => {
       if (data === 'CLEAR' || data === 'STOP') {
         console.log('[WS] control =>', data);
         setPlaying(null);
-        // Rebuild playback chain safely (no remove()/changeType() races)
         await providerRef.current?.reinitialize();
         return;
       }
@@ -118,8 +107,7 @@ export const useLiveAudio = (wsEndpoint: string) => {
         return;
       }
       if (typeof data === 'string') {
-        // Unknown text message; ignore
-        return;
+        return; // ignore unknown text frames
       }
 
       // Audio payloads
@@ -130,21 +118,19 @@ export const useLiveAudio = (wsEndpoint: string) => {
           const ab = await (data as Blob).arrayBuffer();
           await providerRef.current?.buffer(ab);
         }
-      } catch (e) {
-        console.warn('[Audio] buffer error, rebuilding pipeline', e);
+      } catch {
         await providerRef.current?.reinitialize();
       }
     };
 
-    ws.onerror = (e) => {
-      console.warn('[WS] error', e);
+    ws.onerror = () => {
+      // console.warn('[WS] error', e);
     };
 
     ws.onclose = () => {
       console.log('[WS] close');
       isOpenRef.current = false;
       setListening(false);
-      // Attempt auto-reconnect after short backoff (desktop convenience)
       reconnectTimerRef.current = window.setTimeout(() => connect(), 800);
     };
   }, [wsEndpoint, FORMAT]);
@@ -176,17 +162,21 @@ export const useLiveAudio = (wsEndpoint: string) => {
   const listen = useCallback(() => {
     setListening(true);
     send('LISTEN');
-
-    // One user-gesture-triggered play for mobile autoplay policy
     audioRef.current?.play().catch(() => {});
   }, [send]);
 
   const stop = useCallback(() => {
     setListening(false);
     setPlaying(null);
-    // Tell server to stop; keep the same socket (no new WS here!)
     send('STOP');
   }, [send]);
 
-  return { ref: audioRef, listening, playing, listen, stop };
+  // NEW: Skip current speaker without toggling deafen/undeafen
+  const skip = useCallback(() => {
+    // Server should immediately revoke current speaker and advance the queue
+    setPlaying(null);
+    send('SKIP');
+  }, [send]);
+
+  return { ref: audioRef, listening, playing, listen, stop, skip };
 };

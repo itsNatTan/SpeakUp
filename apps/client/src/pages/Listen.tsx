@@ -1,3 +1,4 @@
+// src/pages/Listen.tsx (or wherever this file lives)
 import { roomsApi } from '@api/client';
 import { Room } from '@api/client/types';
 import { Icon } from '@iconify/react';
@@ -20,6 +21,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     playing,
     listen,
     stop: stopListening,
+    skip,            // <-- NEW
   } = useLiveAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
 
   const handleClick = useCallback(() => {
@@ -34,6 +36,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
   const [timeRemaining, setTimeRemaining] = useState(
     expiresAt.getTime() - Date.now(),
   );
+
   useEffect(() => {
     const interval = setInterval(() => {
       const updated = expiresAt.getTime() - Date.now();
@@ -45,6 +48,30 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     }, 1000);
     return () => clearInterval(interval);
   }, [expiresAt, navigate, stopListening]);
+
+  // Optional: Keyboard shortcut "S" to skip
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key === 's' || e.key === 'S') && listening) {
+        e.preventDefault();
+        if (playing) skip();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [listening, playing, skip]);
+
+  // Optional UI guard to avoid spam clicking
+  const [cooldown, setCooldown] = useState(false);
+  const handleSkip = useCallback(() => {
+    if (!listening || !playing || cooldown) return;
+    skip();
+    setCooldown(true);
+    // brief cooldown to avoid accidental double-skips
+    setTimeout(() => setCooldown(false), 500);
+    // small haptic hint on supported devices
+    (navigator as any).vibrate?.(10);
+  }, [listening, playing, cooldown, skip]);
 
   return (
     <div className="w-full h-screen flex flex-col justify-center items-center gap-y-4">
@@ -59,16 +86,37 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
             listening ? 'bg-green-500' : 'bg-red-500',
           )}
           onClick={handleClick}
+          aria-label={listening ? 'Stop listening' : 'Start listening'}
         >
           <Icon icon={listening ? 'tabler:volume' : 'tabler:volume-off'} />
         </button>
+
         <p>{listening ? <>Tuning in&hellip;</> : 'Everyone is muted'}</p>
+
+        {/* NEW: Skip Speaker button */}
+        <button
+          className={clsx(
+            'px-4 py-2 rounded-lg font-semibold transition-colors',
+            listening && playing && !cooldown
+              ? 'bg-amber-500 hover:bg-amber-600 text-white'
+              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+          )}
+          disabled={!listening || !playing || cooldown}
+          onClick={handleSkip}
+          aria-disabled={!listening || !playing || cooldown}
+          aria-label="Skip current speaker"
+          title={listening ? (playing ? 'Skip (S)' : 'No active speaker to skip') : 'Start listening to enable skip'}
+        >
+          <div className="flex items-center gap-2">
+            <Icon icon="tabler:player-skip-forward" />
+            <span>Skip speaker</span>
+          </div>
+        </button>
       </div>
-      {/*
-        TODO: Find better way to resolve premature audio cutting,
-        causing indication despite absence of audio playing.
-       */}
+
+      {/* Hint who we're hearing */}
       {listening && playing && <p>Listening to {playing}&hellip;</p>}
+
       <audio ref={ref} />
       <button
         className={clsx(

@@ -8,7 +8,7 @@ export class MessageHandler {
   private clientKeyMap: Record<string, WebSocket>;
   private storageBuffer: Record<string, { start: Date | null; data: ArrayBuffer[] }>;
 
-  private lastSenderKey: string | undefined = undefined;
+  private lastSenderKey: string | undefined = undefined; // key of last client that actually sent audio
   private bufferKey: string | null = null;
 
   constructor(
@@ -34,7 +34,7 @@ export class MessageHandler {
       case 'LISTEN':
         return this.handleLISTEN;
       case 'SKIP':
-        return this.handleSkip;
+        return this.handleSkip; // now implemented
       default:
         return this.handleAudio;
     }
@@ -51,7 +51,12 @@ export class MessageHandler {
   private getClientName(ws: WebSocket) {
     const key = this.whichClient(ws);
     if (!key) return;
+    // key format: "<name>-abcde" => strip "-abcde" (6 chars)
     return key.slice(0, key.length - 6);
+  }
+
+  private ensureBufferKey(key: string) {
+    if (!this.storageBuffer[key]) this.storageBuffer[key] = { start: null, data: [] };
   }
 
   private flushBuffer(client: WebSocket) {
@@ -59,10 +64,10 @@ export class MessageHandler {
     if (!clientKey) return;
 
     const buffer = this.storageBuffer[clientKey];
-    if (!buffer.start) return;
+    if (!buffer?.start) return;
 
     const filename = `${buffer.start.getTime()}-${clientKey}.wav`;
-    const data = Buffer.concat(buffer.data.map((d) => Buffer.from(d)));
+    const data = Buffer.concat((buffer.data || []).map((d) => Buffer.from(d)));
 
     // Reset buffer
     this.storageBuffer[clientKey] = { start: null, data: [] };
@@ -72,19 +77,20 @@ export class MessageHandler {
   private handleRTS = (ws: WebSocket) => {
     this.sendQueue.registerClient(ws);
     this.trackClient(ws, this.bufferKey!);
-    this.storageBuffer[this.whichClient(ws)!] = { start: null, data: [] };
+    this.ensureBufferKey(this.whichClient(ws)!);
 
     const isFirstInQueue = this.sendQueue.hasPriority(ws);
     const hasListener = this.listener && this.listener.readyState === WebSocket.OPEN;
 
     if (isFirstInQueue && hasListener) {
-      this.storageBuffer[this.whichClient(ws)!].start = new Date();
+      const key = this.whichClient(ws)!;
+      this.storageBuffer[key].start = new Date();
       ws.send('CTS');
     }
   };
 
   public handleSTOP = (ws: WebSocket) => {
-    // If the listener disconnected
+    // If the listener disconnected or explicitly sent STOP
     if (this.listener === ws) {
       this.listener?.send('CLEAR');
       this.listener = null;
@@ -93,11 +99,10 @@ export class MessageHandler {
         const senderWs = this.clientKeyMap[this.lastSenderKey];
         if (senderWs) {
           this.sendQueue.removeClient(senderWs);
-          senderWs.send('STOP');
+          try { senderWs.send('STOP'); } catch {}
         }
         this.lastSenderKey = undefined;
       }
-
       return;
     }
 
@@ -118,14 +123,16 @@ export class MessageHandler {
     if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
       const key = this.whichClient(nextClient);
       if (key) {
+        this.ensureBufferKey(key);
         this.storageBuffer[key].start = new Date();
-        nextClient.send('CTS');
+        try { nextClient.send('CTS'); } catch {}
       }
     }
   };
 
   private handleLISTEN = (ws: WebSocket) => {
-    this.listener?.close();
+    // Replace the previous listener if any
+    try { this.listener?.close(); } catch {}
     this.listener = ws;
 
     ws.on('close', () => {
@@ -135,100 +142,108 @@ export class MessageHandler {
         if (this.lastSenderKey) {
           const senderWs = this.clientKeyMap[this.lastSenderKey];
           if (senderWs) {
+            // Put current speaker back to the front if instructor vanishes mid-speech
             this.sendQueue.prependClient(senderWs);
-            senderWs.send('STOP');
+            try { senderWs.send('STOP'); } catch {}
           }
           this.lastSenderKey = undefined;
         }
       }
     });
 
+    // Inform who is currently speaking (best-effort)
     const currentSenderKey = this.lastSenderKey;
     if (currentSenderKey) {
       const clientName = currentSenderKey.slice(0, currentSenderKey.length - 6);
-      ws.send(`FROM${clientName}`);
+      try { ws.send(`FROM${clientName}`); } catch {}
     }
 
+    // If there is a head-of-queue and we have priority, grant CTS
     const nextClient = this.sendQueue.peekClient?.();
     if (nextClient && this.sendQueue.hasPriority(nextClient)) {
       const key = this.whichClient(nextClient);
       if (key) {
+        this.ensureBufferKey(key);
         this.storageBuffer[key].start = new Date();
-        nextClient.send('CTS');
+        try { nextClient.send('CTS'); } catch {}
       }
     }
   };
 
   private handleAudio = (ws: WebSocket, data: RawData) => {
-    const sender = this.whichClient(ws);
+    // Only forward audio if this client currently has priority
     if (!this.sendQueue.hasPriority(ws)) return;
 
-    if (sender !== this.lastSenderKey) {
-      this.listener?.send(`FROM${this.getClientName(ws)}`);
-      this.lastSenderKey = sender!;
+    const senderKey = this.whichClient(ws)!;
+
+    if (senderKey !== this.lastSenderKey) {
+      // Announce new speaker to the listener on first packet
+      try { this.listener?.send(`FROM${this.getClientName(ws)}`); } catch {}
+      this.lastSenderKey = senderKey;
     }
 
-    this.storageBuffer[sender!].data.push(data as ArrayBuffer);
-    this.listener?.send(data);
+    // Store + forward
+    this.ensureBufferKey(senderKey);
+    this.storageBuffer[senderKey].data.push(data as ArrayBuffer);
+    try { this.listener?.send(data); } catch {}
   };
 
-  // private handleSkip = (ws: WebSocket) => {
-  //   // Only the current instructor (listener) can initiate a skip
-  //   if (this.listener !== ws) return;
+  // NEW: Instructor-only skip of the current speaker (no deafen/undeafen toggle)
+  private handleSkip = (ws: WebSocket) => {
+    // Only allow the current instructor to skip
+    if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) return;
 
-  //   // Stop the instructor's current call UI (your codebase uses CLEAR for this)
-  //   this.listener?.send('CLEAR');
+    // Tell the instructor client to clear playback immediately
+    try { this.listener.send('CLEAR'); } catch {}
 
-  //   // Determine the active student:
-  //   // Prefer the one who already sent audio (lastSenderKey); otherwise, the head of the queue.
-  //   let activeStudentWs: WebSocket | undefined;
+    // Determine the active student robustly:
+    // 1) Prefer the head-of-queue *with priority* (this is the current CTS owner)
+    // 2) Fallback to the last sender (already producing audio)
+    let activeStudentWs: WebSocket | undefined;
+    const head = this.sendQueue.peekClient?.();
+    if (head && this.sendQueue.hasPriority(head)) {
+      activeStudentWs = head;
+    } else if (this.lastSenderKey) {
+      activeStudentWs = this.clientKeyMap[this.lastSenderKey];
+    }
 
-  //   if (this.lastSenderKey) {
-  //     activeStudentWs = this.clientKeyMap[this.lastSenderKey];
-  //   } else {
-  //     const head = this.sendQueue.peekClient?.();
-  //     if (head && this.sendQueue.hasPriority(head)) {
-  //       activeStudentWs = head;
-  //     }
-  //   }
+    let nextClient: WebSocket | undefined;
 
-  //   let nextClient: WebSocket | undefined;
+    if (activeStudentWs) {
+      // Persist any captured audio for the skipped student
+      const file = this.flushBuffer(activeStudentWs);
+      if (file) {
+        try { this.onIncomingFile?.(file.filename, file.data); } catch {}
+      }
 
-  //   if (activeStudentWs) {
-  //     // Flush any buffered data for the active student
-  //     const file = this.flushBuffer(activeStudentWs);
-  //     if (file) {
-  //       this.onIncomingFile?.(file.filename, file.data);
-  //     }
+      // Order the student to stop (use existing STOP path on the client)
+      if (activeStudentWs.readyState === WebSocket.OPEN) {
+        try { activeStudentWs.send('STOP'); } catch {}
+      }
 
-  //     // Tell the student to stop/close (client should switch UI to OFF on STOP)
-  //     if (activeStudentWs.readyState === WebSocket.OPEN) {
-  //       activeStudentWs.send('SKIP');
-  //     }
+      // Remove the skipped student from the queue; get the next one
+      nextClient = this.sendQueue.removeClient(activeStudentWs);
 
-  //     // Remove the kicked student from the queue (do NOT requeue)
-  //     nextClient = this.sendQueue.removeClient(activeStudentWs);
+      // Reset bookkeeping so the next speaker announcement works as usual
+      this.lastSenderKey = undefined;
+    } else {
+      // No obvious active student; still try to move the queue forward
+      if (head) {
+        nextClient = this.sendQueue.removeClient(head);
+      }
+      this.lastSenderKey = undefined;
+    }
 
-  //     // Clear sender bookkeeping so the next speaker announcement works as usual
-  //     this.lastSenderKey = undefined;
-  //   } else {
-  //     // No active student identified; try to move the queue forward anyway
-  //     const head = this.sendQueue.peekClient?.();
-  //     if (head) {
-  //       nextClient = this.sendQueue.removeClient(head);
-  //     }
-  //   }
-
-  //   // Advance to the next student (if any) and grant CTS
-  //   if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
-  //     const key = this.whichClient(nextClient);
-  //     if (key) {
-  //       this.storageBuffer[key].start = new Date();
-  //       nextClient.send('CTS');
-  //       // Note: we intentionally do NOT set lastSenderKey yet;
-  //       // handleAudio will announce FROM<name> on first packet.
-  //     }
-  //   }
-  // };
+    // Advance to the next student (if any) and grant CTS
+    if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
+      const key = this.whichClient(nextClient);
+      if (key) {
+        this.ensureBufferKey(key);
+        this.storageBuffer[key].start = new Date();
+        try { nextClient.send('CTS'); } catch {}
+        // We deliberately do NOT set lastSenderKey here;
+        // handleAudio will announce FROM<name> on the first audio packet.
+      }
+    }
+  };
 }
-
