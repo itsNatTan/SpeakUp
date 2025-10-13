@@ -6,6 +6,7 @@ const JoinPage = () => import('../pages/Join');
 const DownloadPage = () => import('../pages/Download');
 const RoomPage = () => import('../pages/Room');
 const ListenPage = () => import('../pages/Listen');
+const ContactPage = () => import('../pages/Contact');
 
 export const applicationRoutes: RouteObject[] = [
   // Main page
@@ -15,4 +16,5 @@ export const applicationRoutes: RouteObject[] = [
   { path: '/download', lazy: DownloadPage },
   { path: '/:room', lazy: RoomPage },
   { path: '/listen/:room', lazy: ListenPage },
+  { path: '/contact', lazy: ContactPage },
 ];
