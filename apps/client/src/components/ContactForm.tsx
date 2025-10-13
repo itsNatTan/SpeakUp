@@ -5,7 +5,6 @@ import { Link } from "react-router-dom";
 import emailjs from "@emailjs/browser";
 
 function ContactForm() {
-  const router = useRouter();
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -114,16 +113,12 @@ function ContactForm() {
         </form>
 
         {/* 👇 Back to Home button */}
-        <button
-          onClick={() => router.push("/")}
+        <Link
           className="w-full mt-4 border border-gray-300 py-2 rounded-md hover:bg-gray-100 transition-colors"
+          to="/"
         >
-            <Link
-                to="/"
-            >
-                ← Back to Home
-            </Link>
-        </button>
+            Back to Home
+        </Link>
       </div>
     </div>
   );
