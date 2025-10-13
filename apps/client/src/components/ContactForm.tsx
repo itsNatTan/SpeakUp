@@ -1,93 +1,116 @@
-"use client"
+"use client";
 
-import { useState } from 'react';
-import emailjs from '@emailjs/browser';
+import { useState } from "react";
+import emailjs from "@emailjs/browser";
 import { toast } from "react-hot-toast";
 
 function ContactForm() {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [subject, setSubject] = useState('');
-  const [message, setMessage] = useState('');
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [subject, setSubject] = useState("");
+  const [message, setMessage] = useState("");
 
   const resetField = () => {
     setEmail("");
-    setMessage(""); 
-    setSubject(""); 
+    setMessage("");
+    setSubject("");
     setName("");
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    emailjs.sendForm(
-      "service_wziq1r3",
-      "template_5z514ui",
-      e.target as HTMLFormElement,
-      "wH0cTcKyXxGeyTsgQ"
-    )
-    .then(() => {
-      toast.success('Email has been sent!');
-    }, (error) => {
-      toast.error(error);
-    });
+    emailjs
+      .sendForm(
+        "service_wziq1r3",
+        "template_5z514ui",
+        e.target as HTMLFormElement,
+        "wH0cTcKyXxGeyTsgQ"
+      )
+      .then(() => {
+        toast.success("Email has been sent!");
+      })
+      .catch((error) => {
+        toast.error(String(error));
+      });
+
     resetField();
-    (e.target as HTMLFormElement).reset();
+    e.currentTarget.reset();
   };
 
   return (
-    <div className='w-full px-10 sm:px-20 lg:px-60 md:px-40'>
-      <h1 className='flex flex-center w-full'>For any queries or feedback, please send us an email here!</h1><br/>
-        <form onSubmit={handleSubmit} className='justify-center'> 
-          <label htmlFor="name">Name:</label><br/>
-          <input
-            type="text"
-            name="name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-            className="form_input"
-          />
-          <br />
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 px-4 sm:px-8">
+      <div className="w-full max-w-lg bg-white shadow-lg rounded-2xl p-8">
+        <h1 className="text-2xl font-semibold text-center mb-2">Contact Us</h1>
+        <p className="text-center text-gray-600 mb-6">
+          For any queries or feedback, please send us an email here!
+        </p>
 
-          <label htmlFor="email">Email:</label><br/>
-          <input
-            type="email"
-            name="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="form_input"
-          />
-          <br />
+        <form onSubmit={handleSubmit} className="space-y-5">
+          <div>
+            <label htmlFor="name" className="block text-sm font-medium text-gray-700">
+              Name
+            </label>
+            <input
+              type="text"
+              name="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+            />
+          </div>
 
-          <label htmlFor="subject">Subject:</label><br/>
-          <input
-            type="text"
-            name="subject"
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            required
-            className="form_input"
-          />
-          <br />
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+              Email
+            </label>
+            <input
+              type="email"
+              name="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+            />
+          </div>
 
+          <div>
+            <label htmlFor="subject" className="block text-sm font-medium text-gray-700">
+              Subject
+            </label>
+            <input
+              type="text"
+              name="subject"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              required
+              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+            />
+          </div>
 
-          <label htmlFor="message">Message:</label><br />
-          <textarea
-            name="message"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            rows={5}
-            required
-            className="form_input"
-          ></textarea>
-          <br />
+          <div>
+            <label htmlFor="message" className="block text-sm font-medium text-gray-700">
+              Message
+            </label>
+            <textarea
+              name="message"
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              rows={5}
+              required
+              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+            ></textarea>
+          </div>
 
-          <button type="submit" className='black_btn'>
-            Send
+          <button
+            type="submit"
+            className="w-full bg-black text-white py-2 rounded-md hover:bg-gray-800 transition-colors"
+          >
+            Send Message
           </button>
         </form>
+      </div>
     </div>
   );
 }
