@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import emailjs from "@emailjs/browser";
-import { toast } from "react-hot-toast";
 
 function ContactForm() {
+  const router = useRouter();
+
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [subject, setSubject] = useState("");
@@ -28,10 +30,10 @@ function ContactForm() {
         "wH0cTcKyXxGeyTsgQ"
       )
       .then(() => {
-        toast.success("Email has been sent!");
+        alert("Email sent successfully!");
       })
       .catch((error) => {
-        toast.error(String(error));
+        alert(String(error));
       });
 
     resetField();
@@ -43,7 +45,7 @@ function ContactForm() {
       <div className="w-full max-w-lg bg-white shadow-lg rounded-2xl p-8">
         <h1 className="text-2xl font-semibold text-center mb-2">Contact Us</h1>
         <p className="text-center text-gray-600 mb-6">
-          For any queries or feedback, please send us an email here!
+          For any bug reports or feedback, please send us an email here!
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-5">
@@ -110,6 +112,14 @@ function ContactForm() {
             Send Message
           </button>
         </form>
+
+        {/* 👇 Back to Home button */}
+        <button
+          onClick={() => router.push("/")}
+          className="w-full mt-4 border border-gray-300 py-2 rounded-md hover:bg-gray-100 transition-colors"
+        >
+          ← Back to Home
+        </button>
       </div>
     </div>
   );
