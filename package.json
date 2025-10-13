@@ -21,6 +21,8 @@
   },
   "packageManager": "yarn@1.22.22",
   "dependencies": {
+    "@emailjs/browser": "^4.4.1",
+    "react-hot-toast": "^2.6.0",
     "yarn": "^1.22.22"
   }
 }
