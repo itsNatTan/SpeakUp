@@ -5,7 +5,6 @@ import { Link } from "react-router-dom";
 import emailjs from "@emailjs/browser";
 
 function ContactForm() {
-
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [subject, setSubject] = useState("");
@@ -41,15 +40,15 @@ function ContactForm() {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50 px-4 sm:px-8">
-      <div className="w-full max-w-lg bg-white shadow-lg rounded-2xl p-8">
-        <h1 className="text-2xl font-semibold text-center mb-2">Contact Us</h1>
-        <p className="text-center text-gray-600 mb-6">
+      <div className="w-full max-w-lg bg-white shadow-xl rounded-2xl p-8">
+        <h1 className="text-3xl font-bold text-center mb-2 text-gray-900">Contact Us</h1>
+        <p className="text-center text-gray-600 mb-8">
           For any bug reports or feedback, please send us an email here!
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label htmlFor="name" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
               Name
             </label>
             <input
@@ -58,12 +57,12 @@ function ContactForm() {
               value={name}
               onChange={(e) => setName(e.target.value)}
               required
-              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+              className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-black focus:outline-none"
             />
           </div>
 
           <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-1">
               Email
             </label>
             <input
@@ -72,12 +71,12 @@ function ContactForm() {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+              className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-black focus:outline-none"
             />
           </div>
 
           <div>
-            <label htmlFor="subject" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="subject" className="block text-sm font-medium text-gray-700 mb-1">
               Subject
             </label>
             <input
@@ -86,12 +85,12 @@ function ContactForm() {
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
               required
-              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+              className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-black focus:outline-none"
             />
           </div>
 
           <div>
-            <label htmlFor="message" className="block text-sm font-medium text-gray-700">
+            <label htmlFor="message" className="block text-sm font-medium text-gray-700 mb-1">
               Message
             </label>
             <textarea
@@ -100,24 +99,24 @@ function ContactForm() {
               onChange={(e) => setMessage(e.target.value)}
               rows={5}
               required
-              className="mt-1 w-full border border-gray-300 rounded-md p-2 focus:ring-2 focus:ring-black focus:outline-none"
+              className="w-full border border-gray-300 rounded-lg p-2.5 focus:ring-2 focus:ring-black focus:outline-none resize-none"
             ></textarea>
           </div>
 
           <button
             type="submit"
-            className="w-full bg-black text-white py-2 rounded-md hover:bg-gray-800 transition-colors"
+            className="w-full bg-black text-white py-2.5 rounded-lg font-medium hover:bg-gray-800 transition-colors"
           >
             Send Message
           </button>
         </form>
 
-        {/* 👇 Back to Home button */}
+        {/* 👇 Back to Home button styled consistently */}
         <Link
-          className="w-full mt-4 border border-gray-300 py-2 rounded-md hover:bg-gray-100 transition-colors"
           to="/"
+          className="block text-center w-full mt-4 py-2.5 rounded-lg font-medium border border-gray-300 text-gray-700 hover:bg-gray-100 transition-all"
         >
-            Back to Home
+          ← Back to Home
         </Link>
       </div>
     </div>
