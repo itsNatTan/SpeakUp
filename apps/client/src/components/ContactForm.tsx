@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { Link } from "react-router-dom";
 import emailjs from "@emailjs/browser";
 
 function ContactForm() {
@@ -118,7 +118,11 @@ function ContactForm() {
           onClick={() => router.push("/")}
           className="w-full mt-4 border border-gray-300 py-2 rounded-md hover:bg-gray-100 transition-colors"
         >
-          ← Back to Home
+            <Link
+                to="/"
+            >
+                ← Back to Home
+            </Link>
         </button>
       </div>
     </div>
