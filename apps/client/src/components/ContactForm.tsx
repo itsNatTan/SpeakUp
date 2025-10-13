@@ -26,7 +26,7 @@ function ContactForm() {
       e.target as HTMLFormElement,
       "wH0cTcKyXxGeyTsgQ"
     )
-    .then((result) => {
+    .then(() => {
       toast.success('Email has been sent!');
     }, (error) => {
       toast.error(error);
