@@ -30,6 +30,14 @@ const Home: React.FC = () => {
           Download Past Recordings
         </Link>
       </p>
+      <p>
+        <Link
+          className="text-blue-600 hover:text-blue-700 underline underline-offset-4"
+          to="/contact"
+        >
+          Send Feedback / Report Issues
+        </Link>
+      </p>
     </div>
   );
 };
