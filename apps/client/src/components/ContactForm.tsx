@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState } from 'react';
+import { useState } from 'react';
 import emailjs from '@emailjs/browser';
 import { toast } from "react-hot-toast";
 
@@ -17,17 +17,22 @@ function ContactForm() {
     setName("");
   };
 
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    emailjs.sendForm("service_wziq1r3", "template_5z514ui", e.target, "wH0cTcKyXxGeyTsgQ" )
+    emailjs.sendForm(
+      "service_wziq1r3",
+      "template_5z514ui",
+      e.target as HTMLFormElement,
+      "wH0cTcKyXxGeyTsgQ"
+    )
     .then((result) => {
       toast.success('Email has been sent!');
     }, (error) => {
       toast.error(error);
     });
     resetField();
-    e.target.reset();
+    (e.target as HTMLFormElement).reset();
   };
 
   return (
@@ -73,7 +78,7 @@ function ContactForm() {
             name="message"
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            rows="5"
+            rows={5}
             required
             className="form_input"
           ></textarea>
