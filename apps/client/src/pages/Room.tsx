@@ -50,33 +50,25 @@ const Room: React.FC = () => {
     };
   }, [navigate, roomCode]);
 
-  // Start/stop the local recorder only when actively allowed by the server
-  const [transmitting, setTransmitting] = useState(false);
+  // Recorder follows server state only
   useEffect(() => {
-    if (transmitting && state === 'on') {
-      start();   // begin timesliced chunks -> send()
-    } else {
-      stop();    // stop recorder + tracks
-    }
+    if (state === 'on') start();
+    else stop();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, transmitting]);
+  }, [state]);
 
   if (!username) {
     return <Navigate to="/join" />;
   }
 
-  // Mic prewarm: on first "Join queue" tap, ask for permission so CTS can start instantly
   const prewarmMic = async () => {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      s.getTracks().forEach(t => t.stop()); // release immediately; actual recorder starts on CTS
-    } catch {
-      // user denied; your UI may want to show a tip
-    }
+      s.getTracks().forEach(t => t.stop());
+    } catch {}
   };
 
-  const buttonDisabled =
-    !connected || timeRemaining <= 0;
+  const buttonDisabled = !connected || timeRemaining <= 0;
 
   return (
     <div className="space-y-4 text-center">
@@ -95,13 +87,12 @@ const Room: React.FC = () => {
           )}
           disabled={buttonDisabled}
           onClick={async () => {
-            if (!transmitting) {
-              await prewarmMic();  // iOS: request once, then CTS starts instantly
-              beginStream();       // sends RTS<username>, state -> 'waiting'
+            if (state === 'off') {
+              await prewarmMic();
+              beginStream();      // OFF -> WAITING
             } else {
-              endStream();         // sends STOP, state -> 'off'
+              endStream();        // WAITING/ON -> OFF
             }
-            setTransmitting(prev => !prev);
           }}
           title={!connected ? 'Connecting to server…' : undefined}
         >

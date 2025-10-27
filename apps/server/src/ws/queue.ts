@@ -10,20 +10,15 @@ export class SendQueue {
   public removeClient(client: Client): Client | undefined {
     const idx = this.clients.indexOf(client);
     if (idx === -1) {
-      // Not in queue; nothing to remove
+      // not present; nothing to remove
       return undefined;
     }
 
     let retVal: Client | undefined = undefined;
     if (idx === 0) {
-      // Current sender is done transmitting → signal next if any
+      // current head leaves → next becomes candidate
       retVal = this.clients[1];
-    } else {
-      // A waiting sender cancels transmission
-      // (No noisy log here; this is expected sometimes)
-      // console.log('Client cancelled RTS');
     }
-
     this.clients.splice(idx, 1);
     return retVal;
   }
@@ -37,9 +32,7 @@ export class SendQueue {
   }
 
   public prependClient(ws: Client) {
-    // Remove it if it already exists
-    this.clients = this.clients.filter((client) => client !== ws);
-    // Add to front
+    this.clients = this.clients.filter((c) => c !== ws);
     this.clients.unshift(ws);
   }
 
