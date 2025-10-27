@@ -87,7 +87,7 @@ const Room: React.FC = () => {
           )}
           disabled={buttonDisabled}
           onClick={async () => {
-            if (state === 'off') {
+            if (state === 'off' || state === 'waiting') {
               await prewarmMic();
               beginStream();      // OFF -> WAITING
             } else {
