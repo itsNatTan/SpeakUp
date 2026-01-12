@@ -7,7 +7,17 @@ export type AudioRecordingOptions = {
   mimeOverride?: string; // <<— NEW: respects REC_MIME from server
 };
 
-const getAudioStream = () => navigator.mediaDevices.getUserMedia({ audio: true });
+const getAudioStream = () => navigator.mediaDevices.getUserMedia({
+  audio: {
+    echoCancellation: { ideal: true },
+    noiseSuppression: { ideal: true },
+    autoGainControl: { ideal: true },
+    channelCount: { ideal: 1 },
+    sampleRate: 48000,         // keep stable; match your server/playback if possible
+    sampleSize: 16
+  }
+  });
+
 
 function pickRecorderMime(): string | undefined {
   const MR: any = (window as any).MediaRecorder;
