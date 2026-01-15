@@ -8,14 +8,7 @@ export type AudioRecordingOptions = {
 };
 
 const getAudioStream = () => navigator.mediaDevices.getUserMedia({
-  audio: {
-    echoCancellation: { ideal: true },
-    noiseSuppression: { ideal: true },
-    autoGainControl: { ideal: true },
-    channelCount: { ideal: 1 },
-    sampleRate: 48000,         // keep stable; match your server/playback if possible
-    sampleSize: 16
-  }
+  audio: true
   });
 
 
