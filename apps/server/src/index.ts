@@ -22,6 +22,8 @@ const app = new Hono();
 const allowed = new Set<string>([
   'https://main.d1zxivhorbkhbd.amplifyapp.com',
   'https://speakupfyp.space',
+  'https://localhost:443',
+  'https://192.168.31.151',
 ])
 
 // CORS: keep permissive for now; tighten to specific origins when ready

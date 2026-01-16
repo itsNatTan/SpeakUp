@@ -2,27 +2,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MediaProvider } from '../providers/media';
 
-// Decide playback MIME (what the server should send & MediaProvider should buffer).
 function pickPlaybackMime(): string | undefined {
   const MS = (window as any).MediaSource;
   if (!MS || typeof MS.isTypeSupported !== 'function') return undefined;
 
-  const mp4Candidates = [
-    'audio/mp4; codecs="mp4a.40.2"', // AAC-LC
-    'audio/mp4',
-  ];
-  const webmCandidates = [
-    'audio/webm; codecs="opus"',
-    'audio/webm',
-  ];
+  const mp4 = ['audio/mp4; codecs="mp4a.40.2"', 'audio/mp4'];
+  const webm = ['audio/webm; codecs="opus"', 'audio/webm'];
 
   const ua = navigator.userAgent || '';
-  const seemsSafariIOS =
+  const isSafari =
     /iPad|iPhone|iPod/.test(ua) ||
     (/Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR/.test(ua));
 
-  const primary = seemsSafariIOS ? mp4Candidates : webmCandidates;
-  const secondary = seemsSafariIOS ? webmCandidates : mp4Candidates;
+  const primary = isSafari ? mp4 : webm;
+  const secondary = isSafari ? webm : mp4;
 
   for (const t of primary) if (MS.isTypeSupported(t)) return t;
   for (const t of secondary) if (MS.isTypeSupported(t)) return t;
@@ -41,11 +34,10 @@ export const useLiveAudio = (wsEndpoint: string) => {
   const wsRef = useRef<WebSocket | null>(null);
   const isOpenRef = useRef(false);
   const outboundQueueRef = useRef<QueuedMsg[]>([]);
-  const reconnectTimerRef = useRef<number | null>(null);
 
-  const FORMAT: string | undefined = pickPlaybackMime();
+  const FORMAT = useRef<string | undefined>(pickPlaybackMime()).current;
 
-  // ---- Media pipeline: create once and attach to <audio> ----
+  // ---- Media pipeline (once) ----
   useEffect(() => {
     if (!audioRef.current) return;
     providerRef.current = new MediaProvider(FORMAT);
@@ -55,18 +47,11 @@ export const useLiveAudio = (wsEndpoint: string) => {
       providerRef.current?.dispose();
       providerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [FORMAT]);
 
-  // ---- WebSocket connection mgmt with auto-reconnect ----
-  const connect = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      try { wsRef.current.close(); } catch {}
-    }
-    if (reconnectTimerRef.current) {
-      window.clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+  // ---- Open WebSocket ONLY when explicitly requested ----
+  const openSocket = useCallback(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
     const ws = new WebSocket(wsEndpoint);
     ws.binaryType = 'arraybuffer';
@@ -76,83 +61,56 @@ export const useLiveAudio = (wsEndpoint: string) => {
     ws.onopen = () => {
       isOpenRef.current = true;
 
-      // Let server know the preferred container
-      if (FORMAT) {
-        try {
-          ws.send(`FORMAT ${FORMAT}`);
-        } catch {}
-      }
-
       while (outboundQueueRef.current.length) {
         const msg = outboundQueueRef.current.shift()!;
-        if (msg instanceof Blob) ws.send(msg);
-        else ws.send(msg as string | ArrayBufferLike);
+        ws.send(msg as any);
       }
+
       console.log('[WS] open');
     };
 
     ws.onmessage = async (event) => {
       const data = event.data;
 
-      // Control messages
       if (data === 'CLEAR' || data === 'STOP') {
-        console.log('[WS] control =>', data);
         setPlaying(null);
         await providerRef.current?.reinitialize();
         return;
       }
+
       if (typeof data === 'string' && data.startsWith('FROM')) {
-        const sender = (data as string).slice(4);
-        setPlaying(sender);
+        setPlaying(data.slice(4));
         return;
       }
-      if (typeof data === 'string') {
-        return; // ignore unknown text frames
-      }
 
-      // Audio payloads
+      if (typeof data === 'string') return;
+
       try {
         if (data instanceof ArrayBuffer) {
           await providerRef.current?.buffer(data);
         } else if (data instanceof Blob) {
-          const ab = await (data as Blob).arrayBuffer();
-          await providerRef.current?.buffer(ab);
+          await providerRef.current?.buffer(await data.arrayBuffer());
         }
       } catch {
         await providerRef.current?.reinitialize();
       }
     };
 
-    ws.onerror = () => {
-      // console.warn('[WS] error', e);
-    };
-
     ws.onclose = () => {
       console.log('[WS] close');
       isOpenRef.current = false;
+      wsRef.current = null;
       setListening(false);
-      reconnectTimerRef.current = window.setTimeout(() => connect(), 800);
     };
-  }, [wsEndpoint, FORMAT]);
 
-  // Connect on mount / when endpoint changes
-  useEffect(() => {
-    connect();
-    return () => {
-      if (reconnectTimerRef.current) {
-        window.clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
-      try { wsRef.current?.close(); } catch {}
-    };
-  }, [connect]);
+    ws.onerror = () => {};
+  }, [wsEndpoint]);
 
-  // ---- Safe send with queueing until OPEN ----
+  // ---- Safe send (queue until open) ----
   const send = useCallback((msg: QueuedMsg) => {
     const ws = wsRef.current;
     if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
-      if (msg instanceof Blob) ws.send(msg);
-      else ws.send(msg as string | ArrayBufferLike);
+      ws.send(msg as any);
     } else {
       outboundQueueRef.current.push(msg);
     }
@@ -161,9 +119,11 @@ export const useLiveAudio = (wsEndpoint: string) => {
   // ---- Public controls ----
   const listen = useCallback(() => {
     setListening(true);
+    openSocket();
     send('LISTEN');
+    if (FORMAT) send(`FORMAT ${FORMAT}`);
     audioRef.current?.play().catch(() => {});
-  }, [send]);
+  }, [openSocket, send, FORMAT]);
 
   const stop = useCallback(() => {
     setListening(false);
@@ -171,12 +131,21 @@ export const useLiveAudio = (wsEndpoint: string) => {
     send('STOP');
   }, [send]);
 
-  // NEW: Skip current speaker without toggling deafen/undeafen
   const skip = useCallback(() => {
-    // Server should immediately revoke current speaker and advance the queue
     setPlaying(null);
     send('SKIP');
   }, [send]);
+
+  // ---- Cleanup on unmount only ----
+  useEffect(() => {
+    return () => {
+      try {
+        wsRef.current?.close();
+      } catch {}
+      wsRef.current = null;
+      isOpenRef.current = false;
+    };
+  }, []);
 
   return { ref: audioRef, listening, playing, listen, stop, skip };
 };
