@@ -6,7 +6,7 @@ import clsx from 'clsx';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import RoomInfo from '../components/RoomInfo';
-import { useLiveAudio } from '../hooks/useLiveAudio';
+import { useWebRTCAudio } from '../hooks/useWebRTCAudio';
 import { SERVER_HOST, WS_PROTOCOL } from '../utils/constants';
 
 type Props = {
@@ -21,8 +21,8 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     playing,
     listen,
     stop: stopListening,
-    skip,            // <-- NEW
-  } = useLiveAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
+    skip,
+  } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
 
   const handleClick = useCallback(() => {
     if (listening) {
@@ -117,7 +117,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
       {/* Hint who we're hearing */}
       {listening && playing && <p>Listening to {playing}&hellip;</p>}
 
-      <audio ref={ref} />
+      <audio ref={ref} preload="auto" />
       <button
         className={clsx(
           'px-4 py-2 bg-red-500 text-white',

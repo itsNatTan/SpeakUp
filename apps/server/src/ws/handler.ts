@@ -32,6 +32,18 @@ export class MessageHandler {
   public getMessageHandler(data: RawData) {
     const message = data.toString();
 
+    // Check if it's a JSON WebRTC signaling message
+    if (message.startsWith('{')) {
+      try {
+        const signal = JSON.parse(message);
+        if (signal.type) {
+          return this.handleWebRTCSignaling.bind(this, signal);
+        }
+      } catch {
+        // Not valid JSON, continue with normal handling
+      }
+    }
+
     // Listener declares what MSE container it wants to PLAY
     if (message.startsWith('FORMAT ')) {
       const fmt = message.slice('FORMAT '.length).trim();
@@ -118,14 +130,18 @@ export class MessageHandler {
 
   public handleSTOP = (ws: WebSocket) => {
     if (this.listener === ws) {
-      try { this.listener.send('CLEAR'); } catch {}
+      try { 
+        this.listener.send(JSON.stringify({ type: 'clear' }));
+      } catch {}
       this.listener = null;
 
       if (this.currentCtsKey) {
         const senderWs = this.clientKeyMap[this.currentCtsKey];
         if (senderWs) {
           this.sendQueue.removeClient(senderWs);
-          try { senderWs.send('STOP'); } catch {}
+          try { 
+            senderWs.send(JSON.stringify({ type: 'stop' }));
+          } catch {}
         }
       }
       this.lastSenderKey = undefined;
@@ -143,12 +159,14 @@ export class MessageHandler {
       const file = this.flushBuffer(ws);
       if (file) this.onIncomingFile?.(file.filename, file.data);
 
-      try { this.listener?.send('CLEAR'); } catch {}
+      try { 
+        this.listener?.send(JSON.stringify({ type: 'clear' }));
+      } catch {}
     }
 
     const nextClient = this.sendQueue.removeClient(ws);
     if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
-      this.grantCTS(nextClient);
+      this.grantCTSWebRTC(nextClient);
     }
   };
 
@@ -163,7 +181,9 @@ export class MessageHandler {
           const senderWs = this.clientKeyMap[this.currentCtsKey];
           if (senderWs) {
             this.sendQueue.prependClient(senderWs);
-            try { senderWs.send('STOP'); } catch {}
+            try { 
+              senderWs.send(JSON.stringify({ type: 'stop' }));
+            } catch {}
           }
         }
         this.lastSenderKey = undefined;
@@ -173,13 +193,15 @@ export class MessageHandler {
 
     const nextClient = this.sendQueue.peekClient?.();
     if (nextClient && this.sendQueue.hasPriority(nextClient)) {
-      this.grantCTS(nextClient);
+      this.grantCTSWebRTC(nextClient);
       return;
     }
 
     if (this.lastSenderKey) {
       const clientName = this.lastSenderKey.slice(0, this.lastSenderKey.length - 6);
-      try { ws.send(`FROM${clientName}`); } catch {}
+      try { 
+        ws.send(JSON.stringify({ type: 'from', name: clientName }));
+      } catch {}
     }
   };
 
@@ -208,7 +230,9 @@ export class MessageHandler {
   private handleSkip = (ws: WebSocket) => {
     if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) return;
 
-    try { this.listener.send('CLEAR'); } catch {}
+    try { 
+      this.listener.send(JSON.stringify({ type: 'clear' }));
+    } catch {}
 
     let activeStudentWs: WebSocket | undefined;
     if (this.currentCtsKey) {
@@ -224,7 +248,11 @@ export class MessageHandler {
     if (activeStudentWs) {
       const file = this.flushBuffer(activeStudentWs);
       if (file) { try { this.onIncomingFile?.(file.filename, file.data); } catch {} }
-      if (activeStudentWs.readyState === WebSocket.OPEN) { try { activeStudentWs.send('STOP'); } catch {} }
+      if (activeStudentWs.readyState === WebSocket.OPEN) { 
+        try { 
+          activeStudentWs.send(JSON.stringify({ type: 'stop' }));
+        } catch {} 
+      }
       nextClient = this.sendQueue.removeClient(activeStudentWs);
       this.lastSenderKey = undefined;
       this.currentCtsKey = undefined;
@@ -236,8 +264,114 @@ export class MessageHandler {
     }
 
     if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
-      this.grantCTS(nextClient);
+      this.grantCTSWebRTC(nextClient);
     }
+  };
+
+  private handleWebRTCSignaling = (signal: any, ws: WebSocket) => {
+    // Handle WebRTC signaling messages
+    if (signal.type === 'ready') {
+      // Student wants to speak (WebRTC version of RTS)
+      const senderKey = this.whichClient(ws);
+      if (!senderKey) {
+        // Need to register this client first
+        const username = signal.username || 'WebRTC';
+        const key = `${username}-${random.generateLowercase(5)}`;
+        this.bufferKey = key;
+        this.trackClient(ws, key);
+        this.ensureBufferKey(key);
+        ws.on('close', () => this.cleanupOnClose(ws));
+      }
+
+      // Re-register client in queue if not already there (in case they were removed after stop)
+      if (!this.sendQueue.contains(ws)) {
+        this.sendQueue.registerClient(ws);
+      }
+
+      const isFirst = this.sendQueue.hasPriority(ws);
+      const hasListener = this.listener && this.listener.readyState === WebSocket.OPEN;
+      if (isFirst && hasListener) {
+        this.grantCTSWebRTC(ws);
+      }
+      // If not first, they're already in queue and will be granted CTS when their turn comes
+      return;
+    }
+
+    if (signal.type === 'stop') {
+      // Handle stop for WebRTC clients
+      this.handleSTOP(ws);
+      return;
+    }
+
+    if (signal.type === 'offer') {
+      // Student sent an offer, forward to listener
+      const senderKey = this.whichClient(ws);
+      if (senderKey && this.listener && this.listener.readyState === WebSocket.OPEN) {
+        const name = this.getClientName(ws) || 'Speaker';
+        try {
+          this.listener.send(JSON.stringify({ type: 'offer', sdp: signal.sdp, from: name }));
+        } catch {}
+      }
+      return;
+    }
+
+    if (signal.type === 'answer') {
+      // Listener sent an answer, forward to current active student
+      if (this.listener === ws && this.currentCtsKey) {
+        const studentWs = this.clientKeyMap[this.currentCtsKey];
+        if (studentWs && studentWs.readyState === WebSocket.OPEN) {
+          try {
+            studentWs.send(JSON.stringify({ type: 'answer', sdp: signal.sdp }));
+          } catch {}
+        }
+      }
+      return;
+    }
+
+    if (signal.type === 'ice-candidate') {
+      // Forward ICE candidates between peers
+      const senderKey = this.whichClient(ws);
+      if (this.listener === ws && this.currentCtsKey) {
+        // Listener -> Student
+        const studentWs = this.clientKeyMap[this.currentCtsKey];
+        if (studentWs && studentWs.readyState === WebSocket.OPEN) {
+          try {
+            studentWs.send(JSON.stringify({ type: 'ice-candidate', candidate: signal.candidate }));
+          } catch {}
+        }
+      } else if (senderKey && this.listener && this.listener.readyState === WebSocket.OPEN) {
+        // Student -> Listener
+        try {
+          this.listener.send(JSON.stringify({ type: 'ice-candidate', candidate: signal.candidate }));
+        } catch {}
+      }
+      return;
+    }
+  };
+
+  private grantCTSWebRTC = (client: WebSocket) => {
+    if (!this.listener || this.listener.readyState !== WebSocket.OPEN) return;
+    const key = this.whichClient(client);
+    if (!key) return;
+
+    if (!this.sendQueue.hasPriority(client)) {
+      this.sendQueue.removeClient(client);
+      this.sendQueue.prependClient(client);
+    }
+
+    this.ensureBufferKey(key);
+    this.storageBuffer[key].start = new Date();
+
+    // Mark active BEFORE CTS so early frames are accepted
+    this.currentCtsKey = key;
+    this.lastSenderKey = key;
+
+    const name = this.getClientName(client) || 'Speaker';
+    try {
+      this.listener.send(JSON.stringify({ type: 'clear' }));
+      this.listener.send(JSON.stringify({ type: 'from', name }));
+      client.send(JSON.stringify({ type: 'cts' }));
+    } catch {}
   };
 
   private cleanupOnClose = (ws: WebSocket) => {
@@ -250,11 +384,15 @@ export class MessageHandler {
     if (wasPriority || this.lastSenderKey === k || this.currentCtsKey === k) {
       this.lastSenderKey = undefined;
       this.currentCtsKey = undefined;
-      try { this.listener?.send('CLEAR'); } catch {}
+      try { 
+        if (this.listener) {
+          this.listener.send(JSON.stringify({ type: 'clear' }));
+        }
+      } catch {}
 
       const next = this.sendQueue.peekClient?.();
       if (next && this.sendQueue.hasPriority(next) && this.listener && this.listener.readyState === WebSocket.OPEN) {
-        this.grantCTS(next);
+        this.grantCTSWebRTC(next);
       }
     }
 
