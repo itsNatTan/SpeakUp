@@ -234,16 +234,60 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       console.log('[WebRTC] Connection state:', state);
       
       if (state === 'failed' || state === 'disconnected') {
-        console.error('[WebRTC] Connection failed or disconnected');
+        console.error('[WebRTC] Connection failed or disconnected, cleaning up');
+        // Clean up audio element
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+          audioRef.current.pause();
+        }
+        audioSetupRef.current = false;
+        currentStreamRef.current = null;
+        
+        // Close and reset peer connection
         pc.close();
         pcRef.current = null;
         setPlaying(null);
+        
+        // Recreate peer connection for next speaker
+        // This ensures the audio pipeline is ready for the next connection
+        setTimeout(() => {
+          if (isOpenRef.current && !pcRef.current) {
+            console.log('[WebRTC] Recreating peer connection after failure');
+            setupPeerConnection();
+          }
+        }, 100);
       }
     };
     
-    // Log ICE connection state for debugging
+    // Log ICE connection state for debugging and handle failures
     pc.oniceconnectionstatechange = () => {
-      console.log('[WebRTC] ICE connection state:', pc.iceConnectionState);
+      const iceState = pc.iceConnectionState;
+      console.log('[WebRTC] ICE connection state:', iceState);
+      
+      // If ICE connection fails, we need to clean up and recover
+      if (iceState === 'failed' || iceState === 'disconnected') {
+        console.error('[WebRTC] ICE connection failed or disconnected');
+        // Clean up audio
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+          audioRef.current.pause();
+        }
+        audioSetupRef.current = false;
+        currentStreamRef.current = null;
+        setPlaying(null);
+        
+        // Close and reset peer connection
+        pc.close();
+        pcRef.current = null;
+        
+        // Recreate for next speaker
+        setTimeout(() => {
+          if (isOpenRef.current && !pcRef.current) {
+            console.log('[WebRTC] Recreating peer connection after ICE failure');
+            setupPeerConnection();
+          }
+        }, 200);
+      }
     };
     
     // Log ICE gathering state
@@ -338,11 +382,27 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         console.log('[WebRTC] Answer created and sent');
       } catch (error) {
         console.error('[WebRTC] Error handling offer:', error);
-        // If setting remote description fails, close and try to recover
+        // If setting remote description fails, close and reset everything
         if (pcRef.current) {
           pcRef.current.close();
           pcRef.current = null;
         }
+        // Reset audio element to ensure clean state
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+          audioRef.current.pause();
+        }
+        audioSetupRef.current = false;
+        currentStreamRef.current = null;
+        setPlaying(null);
+        
+        // Recreate peer connection for next attempt
+        setTimeout(() => {
+          if (isOpenRef.current && !pcRef.current) {
+            console.log('[WebRTC] Recreating peer connection after offer error');
+            setupPeerConnection();
+          }
+        }, 200);
       }
     }
   }, [setupPeerConnection, sendSignaling]);
@@ -378,16 +438,34 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         } else if (data.type === 'from') {
           setPlaying(data.name || 'Speaker');
         } else if (data.type === 'clear') {
-          console.log('[WebRTC] Received clear message');
+          console.log('[WebRTC] Received clear message - resetting audio pipeline');
           setPlaying(null);
-          // Don't close the peer connection on clear - just reset the audio stream
-          // This allows the connection to be reused for the next speaker
+          // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;
             audioRef.current.pause();
+            // Force reload for mobile browsers
+            try {
+              audioRef.current.load();
+            } catch (e) {
+              // load() may fail for MediaStream sources, that's okay
+            }
           }
           audioSetupRef.current = false;
           currentStreamRef.current = null;
+          
+          // If peer connection is in a bad state, close and recreate it
+          // This ensures the pipeline is ready for the next speaker
+          if (pcRef.current) {
+            const connState = pcRef.current.connectionState;
+            const sigState = pcRef.current.signalingState;
+            if (connState === 'failed' || connState === 'disconnected' || 
+                (sigState !== 'stable' && sigState !== 'have-local-offer')) {
+              console.log('[WebRTC] Clearing bad connection state, will recreate on next offer');
+              pcRef.current.close();
+              pcRef.current = null;
+            }
+          }
         }
       } catch (error) {
         // Handle non-JSON messages (backward compatibility)
@@ -396,14 +474,31 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         if (message === 'CLEAR' || message === 'STOP') {
           console.log('[WebRTC] Received clear/stop message:', message);
           setPlaying(null);
-          // Don't close the peer connection on clear - just reset the audio stream
-          // This allows the connection to be reused for the next speaker
+          // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;
             audioRef.current.pause();
+            // Force reload for mobile browsers
+            try {
+              audioRef.current.load();
+            } catch (e) {
+              // load() may fail for MediaStream sources, that's okay
+            }
           }
           audioSetupRef.current = false;
           currentStreamRef.current = null;
+          
+          // If peer connection is in a bad state, close and recreate it
+          if (pcRef.current) {
+            const connState = pcRef.current.connectionState;
+            const sigState = pcRef.current.signalingState;
+            if (connState === 'failed' || connState === 'disconnected' || 
+                (sigState !== 'stable' && sigState !== 'have-local-offer')) {
+              console.log('[WebRTC] Clearing bad connection state, will recreate on next offer');
+              pcRef.current.close();
+              pcRef.current = null;
+            }
+          }
         } else if (message.startsWith('FROM')) {
           setPlaying(message.slice(4));
         } else {
