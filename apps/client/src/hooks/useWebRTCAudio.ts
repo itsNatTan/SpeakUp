@@ -19,11 +19,29 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const currentStreamRef = useRef<MediaStream | null>(null);
 
   // WebRTC configuration with optimized audio settings
+  // Include TURN servers for better mobile compatibility (NAT traversal)
   const rtcConfig: RTCConfiguration = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
+      // Public TURN servers for mobile NAT traversal
+      // These are free public servers - for production, use your own TURN server
+      { 
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: [
+          'stun:stun.relay.metered.ca:80'
+        ]
+      }
     ],
+    iceCandidatePoolSize: 10, // Pre-gather candidates for faster connection
   };
 
   // Audio codec preferences - prefer Opus but allow fallback to other codecs for mobile compatibility
@@ -332,6 +350,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         } else if (data.type === 'from') {
           setPlaying(data.name || 'Speaker');
         } else if (data.type === 'clear') {
+          console.log('[WebRTC] Received clear message');
           setPlaying(null);
           // Don't close the peer connection on clear - just reset the audio stream
           // This allows the connection to be reused for the next speaker
@@ -347,6 +366,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         const message = event.data.toString();
         
         if (message === 'CLEAR' || message === 'STOP') {
+          console.log('[WebRTC] Received clear/stop message:', message);
           setPlaying(null);
           // Don't close the peer connection on clear - just reset the audio stream
           // This allows the connection to be reused for the next speaker
@@ -358,6 +378,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           currentStreamRef.current = null;
         } else if (message.startsWith('FROM')) {
           setPlaying(message.slice(4));
+        } else {
+          // Log unexpected messages for debugging
+          console.log('[WebRTC] Received unexpected message:', message.substring(0, 100));
         }
       }
     };
@@ -419,22 +442,50 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const skip = useCallback(() => {
     // Skip should work immediately as long as socket is open
     // It doesn't require peer connection to be established
+    console.log('[WebRTC] Skip called, socket state:', {
+      wsExists: !!wsRef.current,
+      readyState: wsRef.current?.readyState,
+      isOpen: isOpenRef.current,
+    });
+    
     const ws = wsRef.current;
-    if (ws && (ws.readyState === WebSocket.OPEN || isOpenRef.current)) {
-      // Try to send immediately if open, otherwise queue it
+    if (ws) {
       if (ws.readyState === WebSocket.OPEN) {
+        console.log('[WebRTC] Sending SKIP message');
         ws.send('SKIP');
+        // Clear playing state immediately for better UX
+        setPlaying(null);
+      } else if (isOpenRef.current) {
+        // Socket might be in a transitional state, try sending anyway
+        console.log('[WebRTC] Socket not fully open but isOpenRef is true, attempting to send SKIP');
+        try {
+          ws.send('SKIP');
+          setPlaying(null);
+        } catch (err) {
+          console.warn('[WebRTC] Failed to send SKIP, will retry:', err);
+          // Retry after a short delay
+          setTimeout(() => {
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              console.log('[WebRTC] Retrying SKIP message');
+              wsRef.current.send('SKIP');
+              setPlaying(null);
+            }
+          }, 200);
+        }
       } else {
-        // Socket might be opening, wait a moment and try again
+        // Socket not ready, queue it
+        console.warn('[WebRTC] Socket not ready, will retry SKIP');
         setTimeout(() => {
           if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            console.log('[WebRTC] Sending queued SKIP message');
             wsRef.current.send('SKIP');
+            setPlaying(null);
           }
-        }, 100);
+        }, 300);
       }
+    } else {
+      console.error('[WebRTC] No WebSocket available for SKIP');
     }
-    // Clear playing state immediately for better UX
-    setPlaying(null);
   }, []);
 
   useEffect(() => {

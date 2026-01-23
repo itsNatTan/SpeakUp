@@ -36,7 +36,23 @@ export const useWebRTCStreaming = (
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
+      // Public TURN servers for better mobile compatibility (NAT traversal)
+      { 
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: [
+          'stun:stun.relay.metered.ca:80'
+        ]
+      }
     ],
+    iceCandidatePoolSize: 10, // Pre-gather candidates for faster connection
   };
 
   const cleanup = useCallback(() => {
