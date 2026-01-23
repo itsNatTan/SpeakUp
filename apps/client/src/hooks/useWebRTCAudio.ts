@@ -18,36 +18,59 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const audioSetupRef = useRef(false);
   const currentStreamRef = useRef<MediaStream | null>(null);
 
-  // WebRTC configuration with optimized audio settings
-  // Include TURN servers for better mobile compatibility (NAT traversal)
+  // Detect device types for specific handling (used throughout the hook)
+  const deviceInfo = {
+    isiPhone: /iPhone/i.test(navigator.userAgent),
+    isAndroid: /Android/i.test(navigator.userAgent),
+    isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
+  };
+  
+  // iOS 15+ has known WebRTC bugs on iPhone (not iPad) - prioritize TURN/relay
+  // Android also needs TURN for NAT traversal
+  // WebRTC configuration with TURN servers prioritized for problematic devices
   const rtcConfig: RTCConfiguration = {
     iceServers: [
+      // For iPhone and Android, prioritize TURN servers (relay) to avoid iOS 15+ bugs
+      // and Android NAT issues
+      ...(deviceInfo.isiPhone || deviceInfo.isAndroid ? [
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: [
+            'stun:stun.relay.metered.ca:80'
+          ]
+        },
+      ] : []),
+      // STUN servers for desktop/iPad (direct connection preferred)
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      // Public TURN servers for mobile NAT traversal
-      // These are free public servers - for production, use your own TURN server
-      { 
-        urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp'
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      {
-        urls: [
-          'stun:stun.relay.metered.ca:80'
-        ]
-      }
+      // TURN servers as fallback for desktop/iPad
+      ...(!deviceInfo.isiPhone && !deviceInfo.isAndroid ? [
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+      ] : []),
     ],
-    iceCandidatePoolSize: 10, // Pre-gather candidates for faster connection
+    iceCandidatePoolSize: deviceInfo.isiPhone || deviceInfo.isAndroid ? 0 : 10, // Don't pre-gather on problematic devices
+    iceTransportPolicy: deviceInfo.isiPhone ? 'relay' : 'all', // iPhone: force relay to avoid iOS 15+ bugs
   };
 
   // Audio codec preferences - Android Chrome needs specific codec order
   // Android often has issues with Opus, so we prioritize G.711 (PCMU/PCMA) for Android
-  const isAndroid = /Android/i.test(navigator.userAgent);
-  const audioCodecPreferences: any[] = isAndroid ? [
+  const audioCodecPreferences: any[] = deviceInfo.isAndroid ? [
     // Android: Prefer G.711 codecs first (better compatibility)
     { mimeType: 'audio/PCMU', clockRate: 8000, channels: 1 },
     { mimeType: 'audio/PCMA', clockRate: 8000, channels: 1 },
@@ -83,8 +106,16 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       pcRef.current.close();
     }
 
+    // Create peer connection with device-specific config
     const pc = new RTCPeerConnection(rtcConfig);
     pcRef.current = pc;
+    
+    console.log('[WebRTC] Created peer connection', {
+      isiPhone: deviceInfo.isiPhone,
+      isAndroid: deviceInfo.isAndroid,
+      iceTransportPolicy: rtcConfig.iceTransportPolicy,
+      iceServersCount: rtcConfig.iceServers?.length,
+    });
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -124,10 +155,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         // Configure audio element for mobile compatibility
         // DO NOT call load() for MediaStream sources!
         // Android Chrome needs special handling
-        const isAndroid = /Android/i.test(navigator.userAgent);
-        
         // For Android, we need to be more careful about stream replacement
-        if (isAndroid && audioElement.srcObject) {
+        if (deviceInfo.isAndroid && audioElement.srcObject) {
           // Android: Clear existing stream first to avoid conflicts
           audioElement.srcObject = null;
           // Small delay for Android to process the change
@@ -178,8 +207,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         
         // Simplified playback - similar to old hooks approach
         // Just try to play immediately, browser will handle buffering
-        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        const delay = isMobile ? 100 : 50; // Minimal delay, let browser handle it
+        const delay = deviceInfo.isMobile ? 100 : 50; // Minimal delay, let browser handle it
         
         // Try to play when track is ready
         if (event.track.readyState === 'live') {
@@ -261,6 +289,23 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     pc.oniceconnectionstatechange = () => {
       const iceState = pc.iceConnectionState;
       console.log('[WebRTC] ICE connection state:', iceState);
+      
+      // iPhone iOS 15+ has known DTLS/UDP issues - log candidate types for debugging
+      if (deviceInfo.isiPhone) {
+        const stats = pc.getStats();
+        stats.then((report) => {
+          report.forEach((stat) => {
+            if (stat.type === 'local-candidate' || stat.type === 'remote-candidate') {
+              console.log('[WebRTC iPhone] ICE candidate:', {
+                type: stat.type,
+                candidateType: (stat as any).candidateType,
+                protocol: (stat as any).protocol,
+                address: (stat as any).address,
+              });
+            }
+          });
+        }).catch(() => {});
+      }
       
       // If ICE connection fails, we need to clean up and recover
       if (iceState === 'failed' || iceState === 'disconnected') {

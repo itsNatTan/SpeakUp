@@ -32,27 +32,49 @@ export const useWebRTCStreaming = (
   const wantSpeakRef = useRef(false);
   const pendingOfferRef = useRef(false);
 
+  // Detect device types for specific handling
+  const isiPhone = /iPhone/i.test(navigator.userAgent);
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  
+  // iOS 15+ has known WebRTC bugs on iPhone - prioritize TURN/relay
+  // Android also needs TURN for NAT traversal
   const rtcConfig: RTCConfiguration = {
     iceServers: [
+      // For iPhone and Android, prioritize TURN servers (relay)
+      ...(isiPhone || isAndroid ? [
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: [
+            'stun:stun.relay.metered.ca:80'
+          ]
+        },
+      ] : []),
+      // STUN servers for desktop/iPad
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      // Public TURN servers for better mobile compatibility (NAT traversal)
-      { 
-        urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp'
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      },
-      {
-        urls: [
-          'stun:stun.relay.metered.ca:80'
-        ]
-      }
+      // TURN as fallback for desktop/iPad
+      ...(!isiPhone && !isAndroid ? [
+        {
+          urls: [
+            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:443?transport=tcp'
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+      ] : []),
     ],
-    iceCandidatePoolSize: 10, // Pre-gather candidates for faster connection
+    iceCandidatePoolSize: isiPhone || isAndroid ? 0 : 10, // Don't pre-gather on problematic devices
+    iceTransportPolicy: isiPhone ? 'relay' : 'all', // iPhone: force relay to avoid iOS 15+ bugs
   };
 
   const cleanup = useCallback(() => {
