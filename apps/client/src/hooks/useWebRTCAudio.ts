@@ -82,6 +82,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         
         // Clean up previous stream if different
         if (currentStreamRef.current && currentStreamRef.current !== stream) {
+          console.log('[WebRTC] Replacing previous stream');
+          // Stop old tracks
+          currentStreamRef.current.getTracks().forEach(track => track.stop());
           audioElement.srcObject = null;
           audioSetupRef.current = false;
         }
@@ -91,14 +94,24 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         
         // Configure audio element for mobile compatibility
         // DO NOT call load() for MediaStream sources!
-        audioElement.srcObject = stream;
+        // For mobile, we need to be more careful about setting srcObject
+        if (audioElement.srcObject !== stream) {
+          audioElement.srcObject = stream;
+        }
         audioElement.preload = 'auto';
         audioElement.autoplay = true; // Important for mobile
         // Set playsInline attribute for iOS (via setAttribute since it's not a standard property)
         audioElement.setAttribute('playsinline', 'true');
+        // Also set x5-playsinline for some Android browsers
+        audioElement.setAttribute('x5-playsinline', 'true');
         
         // Enhanced play attempt for mobile devices
         const attemptPlay = () => {
+          if (!audioElement || !audioElement.srcObject) {
+            console.warn('[WebRTC] Audio element or stream missing, cannot play');
+            return;
+          }
+          
           if (audioElement.paused) {
             const playPromise = audioElement.play();
             if (playPromise !== undefined) {
@@ -112,20 +125,41 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
                   setTimeout(attemptPlay, 500);
                 });
             }
+          } else {
+            console.log('[WebRTC] Audio already playing');
           }
         };
         
         // Wait for stream to be ready - longer delay for mobile
         const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        const delay = isMobile ? 500 : 200;
+        const delay = isMobile ? 800 : 300; // Increased delay for mobile
         
-        setTimeout(attemptPlay, delay);
+        // Wait for track to be ready
+        if (event.track.readyState === 'live') {
+          setTimeout(attemptPlay, delay);
+        } else {
+          // Wait for track to become live
+          const waitForLive = () => {
+            if (event.track.readyState === 'live') {
+              setTimeout(attemptPlay, delay);
+            } else {
+              setTimeout(waitForLive, 100);
+            }
+          };
+          waitForLive();
+        }
         
         // Also try when track becomes active (mobile-specific)
         event.track.addEventListener('active', () => {
           console.log('[WebRTC] Track became active');
           attemptPlay();
         }, { once: true });
+        
+        // Handle track mute/unmute for mobile
+        event.track.addEventListener('unmute', () => {
+          console.log('[WebRTC] Track unmuted');
+          attemptPlay();
+        });
         
         // Cleanup when stream ends
         stream.getTracks().forEach(track => {
@@ -167,26 +201,52 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   }, [sendSignaling]);
 
   const handleOffer = useCallback(async (offer: RTCSessionDescriptionInit) => {
+    console.log('[WebRTC] Handling offer');
+    
+    // If we have an existing connection that's active, we need to close it first
+    // before accepting a new offer (new speaker)
+    if (pcRef.current) {
+      const currentState = pcRef.current.signalingState;
+      const connectionState = pcRef.current.connectionState;
+      console.log('[WebRTC] Current signaling state:', currentState, 'connection state:', connectionState);
+      
+      // If connection is active (connected/connecting), we need to close it first
+      // to accept a new offer from a different speaker
+      if (connectionState === 'connected' || connectionState === 'connecting') {
+        console.log('[WebRTC] Closing existing connection to accept new offer');
+        // Clean up audio first
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+          audioRef.current.pause();
+        }
+        audioSetupRef.current = false;
+        currentStreamRef.current = null;
+        
+        // Close the peer connection
+        pcRef.current.close();
+        pcRef.current = null;
+        
+        // Wait a moment for cleanup
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } else if (currentState !== 'stable' && currentState !== 'have-local-offer') {
+        // Connection exists but in wrong state, close and recreate
+        console.warn('[WebRTC] Connection in invalid state, recreating');
+        pcRef.current.close();
+        pcRef.current = null;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+    
     // Ensure peer connection is set up and ready
     if (!pcRef.current) {
       setupPeerConnection();
+      // Wait a moment for the connection to initialize
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
 
     if (pcRef.current) {
-      const currentState = pcRef.current.signalingState;
-      console.log('[WebRTC] Handling offer, current signaling state:', currentState);
-      
-      // If we're in a state where we can't accept a new offer, recreate the connection
-      // This can happen if a previous connection wasn't properly cleaned up
-      if (currentState !== 'stable' && currentState !== 'have-local-offer') {
-        console.warn('[WebRTC] Connection not in stable state, recreating');
-        pcRef.current.close();
-        setupPeerConnection();
-        // Wait a moment for the new connection to be ready
-        await new Promise(resolve => setTimeout(resolve, 50));
-      }
-      
-      await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
+      try {
+        await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
       
       // Configure audio codec preferences before creating answer
       const transceivers = pcRef.current.getTransceivers();
@@ -218,9 +278,18 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         }
       });
       
-      const answer = await pcRef.current.createAnswer();
-      await pcRef.current.setLocalDescription(answer);
-      sendSignaling({ type: 'answer', sdp: answer });
+        const answer = await pcRef.current.createAnswer();
+        await pcRef.current.setLocalDescription(answer);
+        sendSignaling({ type: 'answer', sdp: answer });
+        console.log('[WebRTC] Answer created and sent');
+      } catch (error) {
+        console.error('[WebRTC] Error handling offer:', error);
+        // If setting remote description fails, close and try to recover
+        if (pcRef.current) {
+          pcRef.current.close();
+          pcRef.current = null;
+        }
+      }
     }
   }, [setupPeerConnection, sendSignaling]);
 
@@ -236,13 +305,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     ws.onopen = () => {
       isOpenRef.current = true;
       console.log('[WS] open');
-      
-      // Pre-initialize peer connection when socket opens
-      // This ensures it's ready when the first offer arrives
-      if (!pcRef.current) {
-        setupPeerConnection();
-        console.log('[WebRTC] Peer connection pre-initialized');
-      }
+      // Don't pre-initialize here - wait for LISTEN to be sent first
+      // This ensures proper initialization order
     };
 
     ws.onmessage = async (event) => {
@@ -304,21 +368,22 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     setListening(true);
     openSocket();
     
-    // Pre-initialize peer connection so it's ready when the first offer arrives
-    // This fixes the race condition where the first speaker's offer arrives
-    // before the peer connection is set up
-    if (!pcRef.current) {
-      setupPeerConnection();
-    }
-    
-    // Send LISTEN message for backward compatibility
-    // The socket will be opened asynchronously, so we'll send LISTEN after it opens
+    // Send LISTEN message and pre-initialize peer connection after socket is ready
+    // This ensures the connection is ready when the first offer arrives
     setTimeout(() => {
       const ws = wsRef.current;
       if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
         ws.send('LISTEN');
+        
+        // Pre-initialize peer connection after LISTEN is sent
+        // This fixes the race condition where the first speaker's offer arrives
+        // before the peer connection is set up
+        if (!pcRef.current) {
+          setupPeerConnection();
+          console.log('[WebRTC] Peer connection pre-initialized after LISTEN');
+        }
       }
-    }, 100);
+    }, 150); // Slightly longer delay to ensure socket is fully ready
     audioRef.current?.play().catch(() => {});
   }, [openSocket, setupPeerConnection]);
 
