@@ -44,12 +44,23 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     iceCandidatePoolSize: 10, // Pre-gather candidates for faster connection
   };
 
-  // Audio codec preferences - prefer Opus but allow fallback to other codecs for mobile compatibility
-  const audioCodecPreferences: any[] = [
+  // Audio codec preferences - Android Chrome needs specific codec order
+  // Android often has issues with Opus, so we prioritize G.711 (PCMU/PCMA) for Android
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const audioCodecPreferences: any[] = isAndroid ? [
+    // Android: Prefer G.711 codecs first (better compatibility)
+    { mimeType: 'audio/PCMU', clockRate: 8000, channels: 1 },
+    { mimeType: 'audio/PCMA', clockRate: 8000, channels: 1 },
+    // Then try Opus variants
+    { mimeType: 'audio/opus', clockRate: 48000, channels: 1 },
+    { mimeType: 'audio/opus', clockRate: 24000, channels: 1 },
+    { mimeType: 'audio/opus', clockRate: 48000, channels: 2 },
+  ] : [
+    // Desktop/iOS: Prefer Opus (better quality)
     { mimeType: 'audio/opus', clockRate: 48000, channels: 2 },
     { mimeType: 'audio/opus', clockRate: 48000, channels: 1 },
     { mimeType: 'audio/opus', clockRate: 24000, channels: 1 },
-    // Fallback codecs for better mobile compatibility
+    // Fallback codecs
     { mimeType: 'audio/PCMU', clockRate: 8000, channels: 1 },
     { mimeType: 'audio/PCMA', clockRate: 8000, channels: 1 },
   ];
@@ -112,16 +123,33 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         
         // Configure audio element for mobile compatibility
         // DO NOT call load() for MediaStream sources!
-        // For mobile, we need to be more careful about setting srcObject
-        if (audioElement.srcObject !== stream) {
-          audioElement.srcObject = stream;
+        // Android Chrome needs special handling
+        const isAndroid = /Android/i.test(navigator.userAgent);
+        
+        // For Android, we need to be more careful about stream replacement
+        if (isAndroid && audioElement.srcObject) {
+          // Android: Clear existing stream first to avoid conflicts
+          audioElement.srcObject = null;
+          // Small delay for Android to process the change
+          setTimeout(() => {
+            if (audioElement && stream) {
+              audioElement.srcObject = stream;
+            }
+          }, 50);
+        } else {
+          // iOS/Desktop: Direct assignment works fine
+          if (audioElement.srcObject !== stream) {
+            audioElement.srcObject = stream;
+          }
         }
+        
         audioElement.preload = 'auto';
         audioElement.autoplay = true; // Important for mobile
-        // Set playsInline attribute for iOS (via setAttribute since it's not a standard property)
+        // Set playsInline attribute for iOS
         audioElement.setAttribute('playsinline', 'true');
-        // Also set x5-playsinline for some Android browsers
+        // Also set x5-playsinline for Android browsers (especially WeChat, QQ browser)
         audioElement.setAttribute('x5-playsinline', 'true');
+        audioElement.setAttribute('webkit-playsinline', 'true');
         
         // Enhanced play attempt for mobile devices
         const attemptPlay = () => {

@@ -75,17 +75,23 @@ export const useWebRTCStreaming = (
     if (!pcRef.current || pendingOfferRef.current) return;
 
     try {
-      // More flexible audio constraints for mobile compatibility
+      // Android-specific audio constraints - Android Chrome has different requirements
+      const isAndroid = /Android/i.test(navigator.userAgent);
       const audioConstraints: MediaTrackConstraints = {
         echoCancellation: audioConfig?.echoCancellation ?? true,
         noiseSuppression: audioConfig?.noiseSuppression ?? true,
         autoGainControl: audioConfig?.autoGainControl ?? true,
       };
       
-      // Only set sampleRate/channelCount if supported (mobile may not support these)
-      // Let the browser choose optimal values for the device
+      // Android Chrome sometimes has issues with certain constraints
+      // Use minimal constraints for better compatibility
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: audioConstraints,
+        audio: isAndroid ? {
+          // Android: Use simpler constraints (often works better without processing)
+          echoCancellation: audioConfig?.echoCancellation ?? false,
+          noiseSuppression: audioConfig?.noiseSuppression ?? false,
+          autoGainControl: audioConfig?.autoGainControl ?? false,
+        } : audioConstraints,
       });
 
       streamRef.current = stream;

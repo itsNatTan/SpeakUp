@@ -228,24 +228,34 @@ export class MessageHandler {
   };
 
   private handleSkip = (ws: WebSocket) => {
-    if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) return;
+    if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) {
+      console.log('[Server] Skip rejected - not listener or listener not open');
+      return;
+    }
+
+    console.log('[Server] Skip called, queue size:', this.sendQueue.size());
+    console.log('[Server] Current CTS key:', this.currentCtsKey, 'Last sender:', this.lastSenderKey);
 
     try { 
       this.listener.send(JSON.stringify({ type: 'clear' }));
     } catch {}
 
     let activeStudentWs: WebSocket | undefined;
+    // First check if there's an active speaker (has CTS)
     if (this.currentCtsKey) {
       activeStudentWs = this.clientKeyMap[this.currentCtsKey];
-    } else {
-      const head = this.sendQueue.peekClient?.();
-      if (head && this.sendQueue.hasPriority(head)) activeStudentWs = head;
-      else if (this.lastSenderKey) activeStudentWs = this.clientKeyMap[this.lastSenderKey];
+      console.log('[Server] Found active speaker with CTS:', this.currentCtsKey);
+    } else if (this.lastSenderKey) {
+      // Check if there's a last sender (might be finishing up)
+      activeStudentWs = this.clientKeyMap[this.lastSenderKey];
+      console.log('[Server] Found last sender:', this.lastSenderKey);
     }
 
     let nextClient: WebSocket | undefined;
 
     if (activeStudentWs) {
+      // There's an active speaker - stop them and remove from queue
+      console.log('[Server] Stopping active speaker');
       const file = this.flushBuffer(activeStudentWs);
       if (file) { try { this.onIncomingFile?.(file.filename, file.data); } catch {} }
       if (activeStudentWs.readyState === WebSocket.OPEN) { 
@@ -257,14 +267,29 @@ export class MessageHandler {
       this.lastSenderKey = undefined;
       this.currentCtsKey = undefined;
     } else {
+      // No active speaker - remove the head of the queue (next waiting person)
       const head = this.sendQueue.peekClient?.();
-      if (head) nextClient = this.sendQueue.removeClient(head);
+      if (head) {
+        console.log('[Server] No active speaker, removing head of queue');
+        // Send stop to the waiting person
+        if (head.readyState === WebSocket.OPEN) {
+          try {
+            head.send(JSON.stringify({ type: 'stop' }));
+          } catch {}
+        }
+        nextClient = this.sendQueue.removeClient(head);
+      } else {
+        console.log('[Server] Queue is empty, nothing to skip');
+      }
       this.lastSenderKey = undefined;
       this.currentCtsKey = undefined;
     }
 
     if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
+      console.log('[Server] Granting CTS to next client after skip');
       this.grantCTSWebRTC(nextClient);
+    } else {
+      console.log('[Server] No next client after skip');
     }
   };
 
