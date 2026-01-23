@@ -37,16 +37,39 @@ export const useWebRTCStreaming = (
   const isAndroid = /Android/i.test(navigator.userAgent);
   
   // iOS 15+ has known WebRTC bugs on iPhone - prioritize TURN/relay
-  // Android also needs TURN for NAT traversal
+  // Android also needs TURN for NAT traversal (especially on mobile data)
   const rtcConfig: RTCConfiguration = {
     iceServers: [
-      // For iPhone and Android, prioritize TURN servers (relay)
-      ...(isiPhone || isAndroid ? [
+      // For iPhone: Use TCP-only TURN servers first (iOS 15+ has UDP socket bugs)
+      // Force relay mode to avoid direct connection issues
+      ...(isiPhone ? [
+        {
+          // TCP-only TURN for iPhone (iOS 15+ UDP issues)
+          urls: [
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turn:openrelay.metered.ca:80?transport=tcp',
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          // UDP TURN as fallback (though may fail on iOS 15+)
+          urls: [
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:80',
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+      ] : []),
+      // For Android: Prioritize TURN servers (needed for mobile data NAT traversal)
+      ...(isAndroid ? [
         {
           urls: [
-            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turn:openrelay.metered.ca:80?transport=tcp',
             'turn:openrelay.metered.ca:443',
-            'turn:openrelay.metered.ca:443?transport=tcp'
+            'turn:openrelay.metered.ca:80',
           ],
           username: 'openrelayproject',
           credential: 'openrelayproject'
@@ -64,9 +87,10 @@ export const useWebRTCStreaming = (
       ...(!isiPhone && !isAndroid ? [
         {
           urls: [
-            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turn:openrelay.metered.ca:80?transport=tcp',
             'turn:openrelay.metered.ca:443',
-            'turn:openrelay.metered.ca:443?transport=tcp'
+            'turn:openrelay.metered.ca:80',
           ],
           username: 'openrelayproject',
           credential: 'openrelayproject'
@@ -147,7 +171,26 @@ export const useWebRTCStreaming = (
       console.log('[WebRTC Streaming] Created offer', {
         type: offer.type,
         sdpLength: offer.sdp?.length,
+        isiPhone,
+        isAndroid,
+        iceTransportPolicy: rtcConfig.iceTransportPolicy,
       });
+      
+      // For iPhone, log if we're using relay mode correctly
+      if (isiPhone) {
+        const stats = await pcRef.current.getStats();
+        stats.forEach((stat) => {
+          if (stat.type === 'local-candidate') {
+            const candidateType = (stat as any).candidateType;
+            const protocol = (stat as any).protocol;
+            console.log('[WebRTC Streaming iPhone] Local candidate:', {
+              candidateType,
+              protocol,
+              address: (stat as any).address,
+            });
+          }
+        });
+      }
 
       await pcRef.current.setLocalDescription(offer);
       send({ type: 'offer', sdp: offer });

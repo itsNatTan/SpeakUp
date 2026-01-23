@@ -26,18 +26,40 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   };
   
   // iOS 15+ has known WebRTC bugs on iPhone (not iPad) - prioritize TURN/relay
-  // Android also needs TURN for NAT traversal
+  // Android also needs TURN for NAT traversal (especially on mobile data)
   // WebRTC configuration with TURN servers prioritized for problematic devices
   const rtcConfig: RTCConfiguration = {
     iceServers: [
-      // For iPhone and Android, prioritize TURN servers (relay) to avoid iOS 15+ bugs
-      // and Android NAT issues
-      ...(deviceInfo.isiPhone || deviceInfo.isAndroid ? [
+      // For iPhone: Use TCP-only TURN servers first (iOS 15+ has UDP socket bugs)
+      // Force relay mode to avoid direct connection issues
+      ...(deviceInfo.isiPhone ? [
+        {
+          // TCP-only TURN for iPhone (iOS 15+ UDP issues)
+          urls: [
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turn:openrelay.metered.ca:80?transport=tcp',
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          // UDP TURN as fallback (though may fail on iOS 15+)
+          urls: [
+            'turn:openrelay.metered.ca:443',
+            'turn:openrelay.metered.ca:80',
+          ],
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+      ] : []),
+      // For Android: Prioritize TURN servers (needed for mobile data NAT traversal)
+      ...(deviceInfo.isAndroid ? [
         {
           urls: [
-            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turn:openrelay.metered.ca:80?transport=tcp',
             'turn:openrelay.metered.ca:443',
-            'turn:openrelay.metered.ca:443?transport=tcp'
+            'turn:openrelay.metered.ca:80',
           ],
           username: 'openrelayproject',
           credential: 'openrelayproject'
@@ -55,9 +77,10 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       ...(!deviceInfo.isiPhone && !deviceInfo.isAndroid ? [
         {
           urls: [
-            'turn:openrelay.metered.ca:80',
+            'turn:openrelay.metered.ca:443?transport=tcp',
+            'turn:openrelay.metered.ca:80?transport=tcp',
             'turn:openrelay.metered.ca:443',
-            'turn:openrelay.metered.ca:443?transport=tcp'
+            'turn:openrelay.metered.ca:80',
           ],
           username: 'openrelayproject',
           credential: 'openrelayproject'
@@ -288,23 +311,40 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     // Log ICE connection state for debugging and handle failures
     pc.oniceconnectionstatechange = () => {
       const iceState = pc.iceConnectionState;
-      console.log('[WebRTC] ICE connection state:', iceState);
+      console.log('[WebRTC] ICE connection state:', iceState, {
+        isiPhone: deviceInfo.isiPhone,
+        iceTransportPolicy: rtcConfig.iceTransportPolicy,
+      });
       
       // iPhone iOS 15+ has known DTLS/UDP issues - log candidate types for debugging
       if (deviceInfo.isiPhone) {
         const stats = pc.getStats();
         stats.then((report) => {
+          const candidates: any[] = [];
           report.forEach((stat) => {
             if (stat.type === 'local-candidate' || stat.type === 'remote-candidate') {
-              console.log('[WebRTC iPhone] ICE candidate:', {
+              candidates.push({
                 type: stat.type,
                 candidateType: (stat as any).candidateType,
                 protocol: (stat as any).protocol,
                 address: (stat as any).address,
+                port: (stat as any).port,
               });
             }
           });
-        }).catch(() => {});
+          if (candidates.length > 0) {
+            console.log('[WebRTC iPhone] ICE candidates:', candidates);
+            // Check if we're actually using relay (should be 'relay' type)
+            const relayCandidates = candidates.filter(c => c.candidateType === 'relay');
+            if (relayCandidates.length === 0 && iceState !== 'connected') {
+              console.warn('[WebRTC iPhone] No relay candidates found! This may indicate relay mode is not working.');
+            } else if (relayCandidates.length > 0) {
+              console.log('[WebRTC iPhone] Using relay candidates:', relayCandidates);
+            }
+          }
+        }).catch((err) => {
+          console.error('[WebRTC iPhone] Failed to get stats:', err);
+        });
       }
       
       // If ICE connection fails, we need to clean up and recover
