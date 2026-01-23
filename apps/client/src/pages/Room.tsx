@@ -79,11 +79,11 @@ const Room: React.FC = () => {
           )}
           disabled={buttonDisabled}
           onClick={async () => {
-            if (state === 'off' || state === 'waiting') {
+            if (state === 'off') {
               await prewarmMic();
               beginStream();      // OFF -> WAITING
             } else {
-              endStream();        // WAITING/ON -> OFF
+              endStream();        // WAITING/ON -> OFF (cancel queue or stop speaking)
             }
           }}
           title={!connected ? 'Connecting to server…' : undefined}
