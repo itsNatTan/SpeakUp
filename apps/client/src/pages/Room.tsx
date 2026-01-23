@@ -5,8 +5,7 @@ import { useEffect, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import Header from '../components/Header';
 import RoomInfo from '../components/RoomInfo';
-import { useAudioRecording } from '../hooks/useAudioRecording';
-import { useStreaming } from '../hooks/useStreaming';
+import { useWebRTCStreaming } from '../hooks/useWebRTCStreaming';
 import stores from '../stores';
 import { SERVER_HOST, WS_PROTOCOL } from '../utils/constants';
 
@@ -14,12 +13,10 @@ const Room: React.FC = () => {
   const { room: roomCode } = useParams<{ room: string }>();
   const username = stores.common.getUsername();
 
-  const { state, connected, send, beginStream, endStream, recMime } = useStreaming(
+  const { state, connected, beginStream, endStream } = useWebRTCStreaming(
     `${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`,
     username ?? '',
   );
-
-  const { start, stop } = useAudioRecording({ onData: send, mimeOverride: recMime});
   const navigate = useNavigate();
 
   const [timeRemaining, setTimeRemaining] = useState(Number.MAX_SAFE_INTEGER);
@@ -50,12 +47,7 @@ const Room: React.FC = () => {
     };
   }, [navigate, roomCode]);
 
-  // Recorder follows server state only
-  useEffect(() => {
-    if (state === 'on') start();
-    else stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state]);
+  // WebRTC handles audio stream automatically, no need for manual start/stop
 
   if (!username) {
     return <Navigate to="/join" />;
