@@ -1,7 +1,7 @@
 export const MIMETYPE = 'audio/webm; codecs=opus';
 
 export const SERVER_HOST: string =
-  import.meta.env.VITE_SERVER_HOST ?? 'localhost';
+  import.meta.env.VITE_SERVER_HOST ?? 'speakupfyp.space';
 
 export const SERVER_PROTOCOL: string =
   import.meta.env.VITE_SERVER_PROTOCOL ?? 'https';
