@@ -134,12 +134,28 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       const transceivers = pcRef.current.getTransceivers();
       transceivers.forEach(transceiver => {
         if (transceiver.receiver.track && transceiver.receiver.track.kind === 'audio') {
-          // Set codec preferences for better audio quality
+          // Get available codecs and filter our preferences to only include available ones
           try {
-            transceiver.setCodecPreferences(audioCodecPreferences);
+            const capabilities = (transceiver.receiver as any).getCapabilities?.();
+            const availableCodecs = capabilities?.codecs || [];
+            
+            // Filter preferences to only include codecs that are actually available
+            const validPreferences = audioCodecPreferences.filter((pref) => {
+              return availableCodecs.some(
+                (codec: any) =>
+                  codec.mimeType === pref.mimeType &&
+                  codec.clockRate === pref.clockRate &&
+                  (pref.channels === undefined || codec.channels === pref.channels)
+              );
+            });
+            
+            // Only set preferences if we have valid ones
+            if (validPreferences.length > 0) {
+              transceiver.setCodecPreferences(validPreferences);
+            }
           } catch (e) {
             // Codec preferences might not be supported in all browsers
-            console.warn('Codec preferences not supported:', e);
+            // Silently fail - this is not critical
           }
         }
       });

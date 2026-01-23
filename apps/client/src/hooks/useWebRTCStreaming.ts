@@ -12,13 +12,13 @@ type SignalingMessage =
   | { type: 'offer'; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; sdp: RTCSessionDescriptionInit }
   | { type: 'ice-candidate'; candidate: RTCIceCandidateInit }
-  | { type: 'ready' }
+  | { type: 'ready'; username?: string }
   | { type: 'stop' }
   | { type: 'error'; error: string };
 
 export const useWebRTCStreaming = (
   wsEndpoint: string,
-  _username: string = '',
+  username: string = '',
   audioConfig?: AudioConfig,
 ) => {
   const [state, setState] = useState<StreamingState>('off');
@@ -106,7 +106,7 @@ export const useWebRTCStreaming = (
       setConnected(true);
 
       if (wantSpeakRef.current) {
-        send({ type: 'ready' });
+        send({ type: 'ready', username });
       }
     };
 
@@ -171,7 +171,7 @@ export const useWebRTCStreaming = (
 
         if (data.type === 'need_rts') {
           if (wantSpeakRef.current) {
-            send({ type: 'ready' });
+            send({ type: 'ready', username });
           }
         }
       } catch {
@@ -194,12 +194,12 @@ export const useWebRTCStreaming = (
 
         if (msg === 'NEED_RTS') {
           if (wantSpeakRef.current) {
-            send({ type: 'ready' });
+            send({ type: 'ready', username });
           }
         }
       }
     };
-  }, [cleanup, createOffer, send, wsEndpoint]);
+  }, [cleanup, createOffer, send, username, wsEndpoint]);
 
   useEffect(() => {
     openSocket();
@@ -216,8 +216,8 @@ export const useWebRTCStreaming = (
   const beginStream = useCallback(() => {
     wantSpeakRef.current = true;
     setState('waiting');
-    send({ type: 'ready' });
-  }, [send]);
+    send({ type: 'ready', username });
+  }, [send, username]);
 
   const endStream = useCallback(() => {
     wantSpeakRef.current = false;
