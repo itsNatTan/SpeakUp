@@ -72,31 +72,46 @@ export const useWebRTCStreaming = (
   }, []);
 
   const createOffer = useCallback(async () => {
-    if (!pcRef.current || pendingOfferRef.current) return;
+    if (!pcRef.current || pendingOfferRef.current) {
+      console.log('[WebRTC Streaming] Skipping offer creation - no PC or pending offer');
+      return;
+    }
+
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    console.log('[WebRTC Streaming] Creating offer', { isAndroid, isMobile, userAgent: navigator.userAgent });
 
     try {
       // Android-specific audio constraints - Android Chrome has different requirements
-      const isAndroid = /Android/i.test(navigator.userAgent);
       const audioConstraints: MediaTrackConstraints = {
         echoCancellation: audioConfig?.echoCancellation ?? true,
         noiseSuppression: audioConfig?.noiseSuppression ?? true,
         autoGainControl: audioConfig?.autoGainControl ?? true,
       };
       
-      // Android Chrome sometimes has issues with certain constraints
-      // Use minimal constraints for better compatibility
+      // Mobile devices (especially Android) often work better with minimal constraints
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: isAndroid ? {
-          // Android: Use simpler constraints (often works better without processing)
+        audio: isMobile ? {
+          // Mobile: Use simpler constraints (often works better without processing)
           echoCancellation: audioConfig?.echoCancellation ?? false,
           noiseSuppression: audioConfig?.noiseSuppression ?? false,
           autoGainControl: audioConfig?.autoGainControl ?? false,
         } : audioConstraints,
       });
 
+      console.log('[WebRTC Streaming] Got user media stream', {
+        tracks: stream.getAudioTracks().length,
+        trackIds: stream.getAudioTracks().map(t => t.id),
+      });
+
       streamRef.current = stream;
 
       stream.getAudioTracks().forEach(track => {
+        console.log('[WebRTC Streaming] Adding track to peer connection', {
+          id: track.id,
+          enabled: track.enabled,
+          readyState: track.readyState,
+        });
         pcRef.current!.addTrack(track, stream);
       });
 
@@ -107,12 +122,18 @@ export const useWebRTCStreaming = (
         offerToReceiveVideo: false,
       });
 
+      console.log('[WebRTC Streaming] Created offer', {
+        type: offer.type,
+        sdpLength: offer.sdp?.length,
+      });
+
       await pcRef.current.setLocalDescription(offer);
       send({ type: 'offer', sdp: offer });
+      console.log('[WebRTC Streaming] Offer sent successfully');
       // Offer created successfully - connection is being established
       // State will be set to 'on' when CTS is received
     } catch (err) {
-      console.error('Offer creation failed:', err);
+      console.error('[WebRTC Streaming] Offer creation failed:', err);
       cleanup();
       setState('off');
     }

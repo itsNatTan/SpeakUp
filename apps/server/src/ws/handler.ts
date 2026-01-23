@@ -333,9 +333,22 @@ export class MessageHandler {
       const senderKey = this.whichClient(ws);
       if (senderKey && this.listener && this.listener.readyState === WebSocket.OPEN) {
         const name = this.getClientName(ws) || 'Speaker';
+        console.log('[Server] Forwarding offer to listener', {
+          from: name,
+          hasSdp: !!signal.sdp,
+          sdpType: signal.sdp?.type,
+        });
         try {
           this.listener.send(JSON.stringify({ type: 'offer', sdp: signal.sdp, from: name }));
-        } catch {}
+        } catch (err) {
+          console.error('[Server] Failed to send offer to listener:', err);
+        }
+      } else {
+        console.warn('[Server] Cannot forward offer - missing senderKey or listener', {
+          hasSenderKey: !!senderKey,
+          hasListener: !!this.listener,
+          listenerOpen: this.listener?.readyState === WebSocket.OPEN,
+        });
       }
       return;
     }

@@ -248,14 +248,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         pcRef.current = null;
         setPlaying(null);
         
-        // Recreate peer connection for next speaker
+        // Recreate peer connection immediately (no delay)
         // This ensures the audio pipeline is ready for the next connection
-        setTimeout(() => {
-          if (isOpenRef.current && !pcRef.current) {
-            console.log('[WebRTC] Recreating peer connection after failure');
-            setupPeerConnection();
-          }
-        }, 100);
+        if (isOpenRef.current) {
+          console.log('[WebRTC] Recreating peer connection after failure');
+          setupPeerConnection();
+        }
       }
     };
     
@@ -280,13 +278,11 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         pc.close();
         pcRef.current = null;
         
-        // Recreate for next speaker
-        setTimeout(() => {
-          if (isOpenRef.current && !pcRef.current) {
-            console.log('[WebRTC] Recreating peer connection after ICE failure');
-            setupPeerConnection();
-          }
-        }, 200);
+        // Recreate for next speaker immediately (no delay)
+        if (isOpenRef.current) {
+          console.log('[WebRTC] Recreating peer connection after ICE failure');
+          setupPeerConnection();
+        }
       }
     };
     
@@ -301,18 +297,20 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const handleOffer = useCallback(async (offer: RTCSessionDescriptionInit) => {
     console.log('[WebRTC] Handling offer');
     
-    // If we have an existing connection that's active, we need to close it first
-    // before accepting a new offer (new speaker)
+    // ALWAYS ensure we have a clean peer connection before handling offers
+    // This prevents issues when mobile fails and next speaker's offer arrives
     if (pcRef.current) {
       const currentState = pcRef.current.signalingState;
       const connectionState = pcRef.current.connectionState;
       console.log('[WebRTC] Current signaling state:', currentState, 'connection state:', connectionState);
       
-      // If connection is active (connected/connecting), we need to close it first
-      // to accept a new offer from a different speaker
-      if (connectionState === 'connected' || connectionState === 'connecting') {
+      // If connection is in any non-stable state, close it immediately
+      // Don't wait - we need a clean connection NOW for the new offer
+      if (connectionState === 'connected' || connectionState === 'connecting' || 
+          connectionState === 'failed' || connectionState === 'disconnected' ||
+          (currentState !== 'stable' && currentState !== 'have-local-offer')) {
         console.log('[WebRTC] Closing existing connection to accept new offer');
-        // Clean up audio first
+        // Clean up audio immediately
         if (audioRef.current) {
           audioRef.current.srcObject = null;
           audioRef.current.pause();
@@ -320,69 +318,60 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         audioSetupRef.current = false;
         currentStreamRef.current = null;
         
-        // Close the peer connection
+        // Close the peer connection immediately (synchronous)
         pcRef.current.close();
         pcRef.current = null;
-        
-        // Wait a moment for cleanup
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } else if (currentState !== 'stable' && currentState !== 'have-local-offer') {
-        // Connection exists but in wrong state, close and recreate
-        console.warn('[WebRTC] Connection in invalid state, recreating');
-        pcRef.current.close();
-        pcRef.current = null;
-        await new Promise(resolve => setTimeout(resolve, 50));
       }
     }
     
-    // Ensure peer connection is set up and ready
-    if (!pcRef.current) {
-      setupPeerConnection();
-      // Wait a moment for the connection to initialize
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-
+    // ALWAYS create a fresh peer connection for each new offer
+    // This ensures we never have a broken state
+    setupPeerConnection();
+    
+    // No delay - the connection is ready immediately after setupPeerConnection
     if (pcRef.current) {
       try {
+        // Set remote description first
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(offer));
-      
-      // Configure audio codec preferences before creating answer
-      const transceivers = pcRef.current.getTransceivers();
-      transceivers.forEach(transceiver => {
-        if (transceiver.receiver.track && transceiver.receiver.track.kind === 'audio') {
-          // Get available codecs and filter our preferences to only include available ones
-          try {
-            const capabilities = (transceiver.receiver as any).getCapabilities?.();
-            const availableCodecs = capabilities?.codecs || [];
-            
-            // Filter preferences to only include codecs that are actually available
-            const validPreferences = audioCodecPreferences.filter((pref) => {
-              return availableCodecs.some(
-                (codec: any) =>
-                  codec.mimeType === pref.mimeType &&
-                  codec.clockRate === pref.clockRate &&
-                  (pref.channels === undefined || codec.channels === pref.channels)
-              );
-            });
-            
-            // Only set preferences if we have valid ones
-            if (validPreferences.length > 0) {
-              transceiver.setCodecPreferences(validPreferences);
+        
+        // Configure audio codec preferences AFTER setRemoteDescription but BEFORE createAnswer
+        // This is the correct order for mobile compatibility
+        const transceivers = pcRef.current.getTransceivers();
+        transceivers.forEach(transceiver => {
+          if (transceiver.receiver.track && transceiver.receiver.track.kind === 'audio') {
+            // Get available codecs and filter our preferences to only include available ones
+            try {
+              const capabilities = (transceiver.receiver as any).getCapabilities?.();
+              const availableCodecs = capabilities?.codecs || [];
+              
+              // Filter preferences to only include codecs that are actually available
+              const validPreferences = audioCodecPreferences.filter((pref) => {
+                return availableCodecs.some(
+                  (codec: any) =>
+                    codec.mimeType === pref.mimeType &&
+                    codec.clockRate === pref.clockRate &&
+                    (pref.channels === undefined || codec.channels === pref.channels)
+                );
+              });
+              
+              // Only set preferences if we have valid ones
+              if (validPreferences.length > 0) {
+                transceiver.setCodecPreferences(validPreferences);
+              }
+            } catch (e) {
+              // Codec preferences might not be supported in all browsers
+              // Silently fail - this is not critical
             }
-          } catch (e) {
-            // Codec preferences might not be supported in all browsers
-            // Silently fail - this is not critical
           }
-        }
-      });
-      
+        });
+        
         const answer = await pcRef.current.createAnswer();
         await pcRef.current.setLocalDescription(answer);
         sendSignaling({ type: 'answer', sdp: answer });
         console.log('[WebRTC] Answer created and sent');
       } catch (error) {
         console.error('[WebRTC] Error handling offer:', error);
-        // If setting remote description fails, close and reset everything
+        // If anything fails, reset everything immediately
         if (pcRef.current) {
           pcRef.current.close();
           pcRef.current = null;
@@ -396,16 +385,14 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         currentStreamRef.current = null;
         setPlaying(null);
         
-        // Recreate peer connection for next attempt
-        setTimeout(() => {
-          if (isOpenRef.current && !pcRef.current) {
-            console.log('[WebRTC] Recreating peer connection after offer error');
-            setupPeerConnection();
-          }
-        }, 200);
+        // Recreate peer connection immediately (no delay)
+        if (isOpenRef.current) {
+          console.log('[WebRTC] Recreating peer connection after offer error');
+          setupPeerConnection();
+        }
       }
     }
-  }, [setupPeerConnection, sendSignaling]);
+  }, [setupPeerConnection, sendSignaling, audioCodecPreferences]);
 
   const openSocket = useCallback(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
@@ -432,6 +419,11 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         const data = JSON.parse(event.data);
         
         if (data.type === 'offer') {
+          console.log('[WebRTC] Received offer from server', {
+            hasSdp: !!data.sdp,
+            sdpType: data.sdp?.type,
+            from: data.from || 'unknown',
+          });
           await handleOffer(data.sdp);
         } else if (data.type === 'ice-candidate' && pcRef.current) {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
