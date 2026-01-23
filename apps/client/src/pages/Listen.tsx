@@ -54,24 +54,26 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.key === 's' || e.key === 'S') && listening) {
         e.preventDefault();
-        if (playing) skip();
+        skip(); // Skip works as long as listening, doesn't need playing
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [listening, playing, skip]);
+  }, [listening, skip]);
 
   // Optional UI guard to avoid spam clicking
   const [cooldown, setCooldown] = useState(false);
   const handleSkip = useCallback(() => {
-    if (!listening || !playing || cooldown) return;
+    // Skip should work as long as we're listening - doesn't need playing to be set
+    // This allows skipping even before first connection is established
+    if (!listening || cooldown) return;
     skip();
     setCooldown(true);
     // brief cooldown to avoid accidental double-skips
     setTimeout(() => setCooldown(false), 500);
     // small haptic hint on supported devices
     (navigator as any).vibrate?.(10);
-  }, [listening, playing, cooldown, skip]);
+  }, [listening, cooldown, skip]);
 
   return (
     <div className="w-full h-screen flex flex-col justify-center items-center gap-y-4">
@@ -97,15 +99,15 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
         <button
           className={clsx(
             'px-4 py-2 rounded-lg font-semibold transition-colors',
-            listening && playing && !cooldown
+            listening && !cooldown
               ? 'bg-amber-500 hover:bg-amber-600 text-white'
               : 'bg-gray-300 text-gray-500 cursor-not-allowed'
           )}
-          disabled={!listening || !playing || cooldown}
+          disabled={!listening || cooldown}
           onClick={handleSkip}
-          aria-disabled={!listening || !playing || cooldown}
+          aria-disabled={!listening || cooldown}
           aria-label="Skip current speaker"
-          title={listening ? (playing ? 'Skip (S)' : 'No active speaker to skip') : 'Start listening to enable skip'}
+          title={listening ? 'Skip (S)' : 'Start listening to enable skip'}
         >
           <div className="flex items-center gap-2">
             <Icon icon="tabler:player-skip-forward" />

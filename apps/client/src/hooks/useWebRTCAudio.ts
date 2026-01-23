@@ -130,20 +130,28 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           }
         };
         
-        // Wait for stream to be ready - longer delay for mobile
+        // Simplified playback - similar to old hooks approach
+        // Just try to play immediately, browser will handle buffering
         const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        const delay = isMobile ? 800 : 300; // Increased delay for mobile
+        const delay = isMobile ? 100 : 50; // Minimal delay, let browser handle it
         
-        // Wait for track to be ready
+        // Try to play when track is ready
         if (event.track.readyState === 'live') {
           setTimeout(attemptPlay, delay);
         } else {
-          // Wait for track to become live
+          // Wait for track to become live, but don't wait too long
+          let attempts = 0;
+          const maxAttempts = 20; // Max 2 seconds
           const waitForLive = () => {
             if (event.track.readyState === 'live') {
               setTimeout(attemptPlay, delay);
-            } else {
+            } else if (attempts < maxAttempts) {
+              attempts++;
               setTimeout(waitForLive, 100);
+            } else {
+              // Give up waiting and try anyway
+              console.warn('[WebRTC] Track not live after waiting, attempting play anyway');
+              attemptPlay();
             }
           };
           waitForLive();
@@ -305,8 +313,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     ws.onopen = () => {
       isOpenRef.current = true;
       console.log('[WS] open');
-      // Don't pre-initialize here - wait for LISTEN to be sent first
-      // This ensures proper initialization order
+      // Initialize peer connection immediately when socket opens
+      // This ensures it's ready as soon as possible
+      if (!pcRef.current) {
+        setupPeerConnection();
+        console.log('[WebRTC] Peer connection initialized on socket open');
+      }
     };
 
     ws.onmessage = async (event) => {
@@ -368,22 +380,20 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     setListening(true);
     openSocket();
     
-    // Send LISTEN message and pre-initialize peer connection after socket is ready
-    // This ensures the connection is ready when the first offer arrives
+    // Send LISTEN message - peer connection should already be initialized in onopen
+    // But ensure it exists just in case
     setTimeout(() => {
       const ws = wsRef.current;
       if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
         ws.send('LISTEN');
         
-        // Pre-initialize peer connection after LISTEN is sent
-        // This fixes the race condition where the first speaker's offer arrives
-        // before the peer connection is set up
+        // Ensure peer connection exists (should already be created in onopen)
         if (!pcRef.current) {
           setupPeerConnection();
-          console.log('[WebRTC] Peer connection pre-initialized after LISTEN');
+          console.log('[WebRTC] Peer connection created after LISTEN (fallback)');
         }
       }
-    }, 150); // Slightly longer delay to ensure socket is fully ready
+    }, 50); // Minimal delay - just to ensure socket is ready
     audioRef.current?.play().catch(() => {});
   }, [openSocket, setupPeerConnection]);
 
@@ -407,11 +417,24 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   }, []);
 
   const skip = useCallback(() => {
-    setPlaying(null);
+    // Skip should work immediately as long as socket is open
+    // It doesn't require peer connection to be established
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send('SKIP');
+    if (ws && (ws.readyState === WebSocket.OPEN || isOpenRef.current)) {
+      // Try to send immediately if open, otherwise queue it
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send('SKIP');
+      } else {
+        // Socket might be opening, wait a moment and try again
+        setTimeout(() => {
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send('SKIP');
+          }
+        }, 100);
+      }
     }
+    // Clear playing state immediately for better UX
+    setPlaying(null);
   }, []);
 
   useEffect(() => {
