@@ -18,7 +18,7 @@ type SignalingMessage =
 
 export const useWebRTCStreaming = (
   wsEndpoint: string,
-  username: string = '',
+  _username: string = '',
   audioConfig?: AudioConfig,
 ) => {
   const [state, setState] = useState<StreamingState>('off');

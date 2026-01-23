@@ -27,7 +27,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   };
 
   // Audio codec preferences - prefer Opus for better quality and lower latency
-  const audioCodecPreferences: RTCRtpCodecCapability[] = [
+  const audioCodecPreferences: any[] = [
     { mimeType: 'audio/opus', clockRate: 48000, channels: 2 },
     { mimeType: 'audio/opus', clockRate: 48000, channels: 1 },
   ];
