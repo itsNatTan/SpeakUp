@@ -59,14 +59,17 @@ export const useWebRTCStreaming = (
     if (!pcRef.current || pendingOfferRef.current) return;
 
     try {
+      // More flexible audio constraints for mobile compatibility
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: audioConfig?.echoCancellation ?? true,
+        noiseSuppression: audioConfig?.noiseSuppression ?? true,
+        autoGainControl: audioConfig?.autoGainControl ?? true,
+      };
+      
+      // Only set sampleRate/channelCount if supported (mobile may not support these)
+      // Let the browser choose optimal values for the device
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: audioConfig?.echoCancellation ?? true,
-          noiseSuppression: audioConfig?.noiseSuppression ?? true,
-          autoGainControl: audioConfig?.autoGainControl ?? true,
-          sampleRate: 48000,
-          channelCount: 1,
-        },
+        audio: audioConstraints,
       });
 
       streamRef.current = stream;
@@ -84,6 +87,8 @@ export const useWebRTCStreaming = (
 
       await pcRef.current.setLocalDescription(offer);
       send({ type: 'offer', sdp: offer });
+      // Offer created successfully - connection is being established
+      // State will be set to 'on' when CTS is received
     } catch (err) {
       console.error('Offer creation failed:', err);
       cleanup();
@@ -150,16 +155,32 @@ export const useWebRTCStreaming = (
             };
 
             pcRef.current.onconnectionstatechange = () => {
-              if (
-                pcRef.current?.connectionState === 'failed' ||
-                pcRef.current?.connectionState === 'disconnected'
-              ) {
+              const state = pcRef.current?.connectionState;
+              console.log('[WebRTC Streaming] Connection state:', state);
+              
+              if (state === 'failed' || state === 'disconnected') {
+                console.error('[WebRTC Streaming] Connection failed or disconnected');
                 cleanup();
                 setState('off');
               }
             };
+            
+            // Log ICE connection state for debugging
+            pcRef.current.oniceconnectionstatechange = () => {
+              console.log('[WebRTC Streaming] ICE connection state:', pcRef.current?.iceConnectionState);
+            };
+            
+            // Log ICE gathering state
+            pcRef.current.onicegatheringstatechange = () => {
+              console.log('[WebRTC Streaming] ICE gathering state:', pcRef.current?.iceGatheringState);
+            };
 
             createOffer();
+            // State will be set to 'on' after offer is created successfully
+            // If it fails, createOffer will handle cleanup and set state to 'off'
+          } else {
+            // Connection already exists, set state to 'on'
+            setState('on');
           }
         }
 
