@@ -9,6 +9,9 @@ export class MessageHandler {
   private listener: WebSocket | null;
   private clientKeyMap: Record<string, WebSocket>;
   private storageBuffer: Record<string, BufferSlot>;
+  
+  // Track all instructor connections (for queue updates even when not listening)
+  private instructorConnections: Set<WebSocket> = new Set();
 
   // Active speaker tracking
   private lastSenderKey: string | undefined = undefined;
@@ -37,6 +40,16 @@ export class MessageHandler {
       try {
         const signal = JSON.parse(message);
         if (signal.type) {
+          // Handle queue management messages
+          if (signal.type === 'kick-user') {
+            return this.handleKickUser.bind(this, signal.username);
+          }
+          if (signal.type === 'reorder-user') {
+            return this.handleReorderUser.bind(this, signal.username, signal.direction);
+          }
+          if (signal.type === 'move-user-to-position') {
+            return this.handleMoveUserToPosition.bind(this, signal.username, signal.position);
+          }
           return this.handleWebRTCSignaling.bind(this, signal);
         }
       } catch {
@@ -64,6 +77,8 @@ export class MessageHandler {
         return this.handleLISTEN;
       case 'SKIP':
         return this.handleSkip;
+      case 'QUEUE_STATUS':
+        return this.handleQueueStatus;
       default:
         return this.handleAudio;
     }
@@ -113,6 +128,9 @@ export class MessageHandler {
     }
 
     try { client.send('CTS'); } catch {}
+    
+    // Send queue update when speaker changes
+    this.sendQueueUpdate();
   };
 
   private handleRTS = (ws: WebSocket) => {
@@ -126,6 +144,9 @@ export class MessageHandler {
     const isFirst = this.sendQueue.hasPriority(ws);
     const hasListener = this.listener && this.listener.readyState === WebSocket.OPEN;
     if (isFirst && hasListener) this.grantCTS(ws);
+    
+    // Send queue update
+    this.sendQueueUpdate();
   };
 
   public handleSTOP = (ws: WebSocket) => {
@@ -168,13 +189,21 @@ export class MessageHandler {
     if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
       this.grantCTSWebRTC(nextClient);
     }
+    // Send queue update
+    this.sendQueueUpdate();
   };
 
   private handleLISTEN = (ws: WebSocket) => {
     try { this.listener?.close(); } catch {}
     this.listener = ws;
+    
+    // Also track as instructor connection
+    if (ws.readyState === WebSocket.OPEN) {
+      this.instructorConnections.add(ws);
+    }
 
     ws.on('close', () => {
+      this.instructorConnections.delete(ws);
       if (this.listener === ws) {
         this.listener = null;
         if (this.currentCtsKey) {
@@ -194,6 +223,8 @@ export class MessageHandler {
     const nextClient = this.sendQueue.peekClient?.();
     if (nextClient && this.sendQueue.hasPriority(nextClient)) {
       this.grantCTSWebRTC(nextClient);
+      // Send initial queue status
+      this.sendQueueUpdate();
       return;
     }
 
@@ -203,6 +234,9 @@ export class MessageHandler {
         ws.send(JSON.stringify({ type: 'from', name: clientName }));
       } catch {}
     }
+
+    // Send initial queue status when listener connects
+    this.sendQueueUpdate();
   };
 
   private handleAudio = (ws: WebSocket, data: RawData) => {
@@ -291,6 +325,235 @@ export class MessageHandler {
     } else {
       console.log('[Server] No next client after skip');
     }
+    // Send queue update
+    this.sendQueueUpdate();
+  };
+
+  private sendQueueUpdate = () => {
+    const queueInfo = this.getQueueInfo();
+    
+    // Send to all instructor connections (including when not actively listening)
+    this.instructorConnections.forEach((instructorWs: WebSocket) => {
+      if (instructorWs.readyState === WebSocket.OPEN) {
+        try {
+          instructorWs.send(JSON.stringify({ type: 'queue-update', ...queueInfo }));
+        } catch {
+          // Remove dead connections
+          this.instructorConnections.delete(instructorWs);
+        }
+      } else {
+        // Remove closed connections
+        this.instructorConnections.delete(instructorWs);
+      }
+    });
+  };
+
+  private getQueueInfo = () => {
+    const queueClients = this.sendQueue.getAllClients();
+    const queue: Array<{ username: string; key: string }> = [];
+    
+    const currentSpeaker = this.currentCtsKey 
+      ? this.currentCtsKey.slice(0, this.currentCtsKey.length - 6)
+      : null;
+    
+    // Build queue, excluding current speaker
+    queueClients.forEach((client) => {
+      const key = this.whichClient(client);
+      if (key) {
+        const username = key.slice(0, key.length - 6);
+        // Only add to queue if not the current speaker
+        if (username !== currentSpeaker) {
+          queue.push({ username, key });
+        }
+      }
+    });
+
+    return {
+      queue,
+      currentSpeaker,
+      queueSize: queue.length, // Queue size excludes current speaker
+    };
+  };
+
+  private handleQueueStatus = (ws: WebSocket) => {
+    // Track this as an instructor connection (for queue updates)
+    if (ws.readyState === WebSocket.OPEN) {
+      this.instructorConnections.add(ws);
+      
+      // Clean up on close
+      ws.on('close', () => {
+        this.instructorConnections.delete(ws);
+        if (this.listener === ws) {
+          this.listener = null;
+        }
+      });
+    }
+
+    const queueInfo = this.getQueueInfo();
+    try {
+      ws.send(JSON.stringify({ type: 'queue-status', ...queueInfo }));
+    } catch {}
+  };
+
+  private handleKickUser = (username: string, ws: WebSocket) => {
+    // Only listener can kick users
+    if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    // Find the client by username
+    let targetClient: WebSocket | null = null;
+    let targetKey: string | null = null;
+
+    for (const [key, client] of Object.entries(this.clientKeyMap)) {
+      const clientUsername = key.slice(0, key.length - 6);
+      if (clientUsername === username) {
+        targetClient = client;
+        targetKey = key;
+        break;
+      }
+    }
+
+    if (!targetClient || !targetKey) {
+      // User not found
+      try {
+        this.listener.send(JSON.stringify({ type: 'kick-error', message: 'User not found in queue' }));
+      } catch {}
+      return;
+    }
+
+    // Check if this is the current speaker
+    const isCurrentSpeaker = targetKey === this.currentCtsKey || targetKey === this.lastSenderKey;
+
+    if (isCurrentSpeaker) {
+      // Stop the current speaker
+      const file = this.flushBuffer(targetClient);
+      if (file) { try { this.onIncomingFile?.(file.filename, file.data); } catch {} }
+      
+      if (targetClient.readyState === WebSocket.OPEN) {
+        try {
+          targetClient.send(JSON.stringify({ type: 'stop' }));
+        } catch {}
+      }
+
+      this.lastSenderKey = undefined;
+      this.currentCtsKey = undefined;
+
+      try {
+        this.listener.send(JSON.stringify({ type: 'clear' }));
+      } catch {}
+    }
+
+    // Remove from queue
+    const nextClient = this.sendQueue.removeClient(targetClient);
+    
+    // If this was the current speaker, grant CTS to next in queue
+    if (isCurrentSpeaker && nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
+      this.grantCTSWebRTC(nextClient);
+    }
+
+    // Send kicked message to user (this will turn off their speaker)
+    if (targetClient.readyState === WebSocket.OPEN) {
+      try {
+        targetClient.send(JSON.stringify({ type: 'kicked' }));
+        // Also send stop to ensure they're fully stopped
+        targetClient.send(JSON.stringify({ type: 'stop' }));
+      } catch {}
+    }
+
+    // Send queue update
+    this.sendQueueUpdate();
+  };
+
+  private handleReorderUser = (username: string, direction: 'up' | 'down', ws: WebSocket) => {
+    // Only instructor can reorder users
+    if (!this.instructorConnections.has(ws) || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    // Find the client by username
+    let targetClient: WebSocket | null = null;
+
+    for (const [key, client] of Object.entries(this.clientKeyMap)) {
+      const clientUsername = key.slice(0, key.length - 6);
+      if (clientUsername === username) {
+        targetClient = client;
+        break;
+      }
+    }
+
+    if (!targetClient) {
+      // User not found
+      try {
+        ws.send(JSON.stringify({ type: 'reorder-error', message: 'User not found in queue' }));
+      } catch {}
+      return;
+    }
+
+    // Don't allow reordering if user is the current speaker
+    const targetKey = this.whichClient(targetClient);
+    if (targetKey && (targetKey === this.currentCtsKey || targetKey === this.lastSenderKey)) {
+      try {
+        ws.send(JSON.stringify({ type: 'reorder-error', message: 'Cannot reorder current speaker' }));
+      } catch {}
+      return;
+    }
+
+    // Move the client in the queue
+    const moved = this.sendQueue.moveClient(targetClient, direction);
+    if (moved) {
+      // Send queue update
+      this.sendQueueUpdate();
+    } else {
+      try {
+        ws.send(JSON.stringify({ type: 'reorder-error', message: 'Cannot move user in that direction' }));
+      } catch {}
+    }
+  };
+
+  private handleMoveUserToPosition = (username: string, position: number, ws: WebSocket) => {
+    // Only instructor can move users
+    if (!this.instructorConnections.has(ws) || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    // Find the client by username
+    let targetClient: WebSocket | null = null;
+
+    for (const [key, client] of Object.entries(this.clientKeyMap)) {
+      const clientUsername = key.slice(0, key.length - 6);
+      if (clientUsername === username) {
+        targetClient = client;
+        break;
+      }
+    }
+
+    if (!targetClient) {
+      try {
+        ws.send(JSON.stringify({ type: 'move-error', message: 'User not found in queue' }));
+      } catch {}
+      return;
+    }
+
+    // Don't allow moving if user is the current speaker
+    const targetKey = this.whichClient(targetClient);
+    if (targetKey && (targetKey === this.currentCtsKey || targetKey === this.lastSenderKey)) {
+      try {
+        ws.send(JSON.stringify({ type: 'move-error', message: 'Cannot move current speaker' }));
+      } catch {}
+      return;
+    }
+
+    // Move the client to the specified position
+    const moved = this.sendQueue.moveClientToPosition(targetClient, position);
+    if (moved) {
+      // Send queue update
+      this.sendQueueUpdate();
+    } else {
+      try {
+        ws.send(JSON.stringify({ type: 'move-error', message: 'Cannot move user to that position' }));
+      } catch {}
+    }
   };
 
   private handleWebRTCSignaling = (signal: any, ws: WebSocket) => {
@@ -311,6 +574,8 @@ export class MessageHandler {
       // Re-register client in queue if not already there (in case they were removed after stop)
       if (!this.sendQueue.contains(ws)) {
         this.sendQueue.registerClient(ws);
+        // Send queue update to listener
+        this.sendQueueUpdate();
       }
 
       const isFirst = this.sendQueue.hasPriority(ws);
@@ -410,6 +675,9 @@ export class MessageHandler {
       this.listener.send(JSON.stringify({ type: 'from', name }));
       client.send(JSON.stringify({ type: 'cts' }));
     } catch {}
+    
+    // Send queue update when speaker changes
+    this.sendQueueUpdate();
   };
 
   private cleanupOnClose = (ws: WebSocket) => {
@@ -436,5 +704,8 @@ export class MessageHandler {
 
     delete this.clientKeyMap[k];
     delete this.storageBuffer[k];
+    
+    // Send queue update when client leaves
+    this.sendQueueUpdate();
   };
 }

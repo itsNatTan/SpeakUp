@@ -5,6 +5,7 @@ import { Icon } from '@iconify/react';
 import clsx from 'clsx';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import QueueManagement from '../components/QueueManagement';
 import RoomInfo from '../components/RoomInfo';
 import { useWebRTCAudio } from '../hooks/useWebRTCAudio';
 import { SERVER_HOST, WS_PROTOCOL } from '../utils/constants';
@@ -22,7 +23,13 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     listen,
     stop: stopListening,
     skip,
+    queueInfo,
+    kickUser,
+    reorderUser,
+    moveUserToPosition,
   } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
+  
+  const [queueOpen, setQueueOpen] = useState(false);
 
   const handleClick = useCallback(() => {
     if (listening) {
@@ -130,6 +137,16 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
       >
         Leave
       </button>
+
+      {/* Queue Management - Always visible */}
+      <QueueManagement
+        queueInfo={queueInfo}
+        onKickUser={kickUser}
+        onReorderUser={reorderUser}
+        onMoveToPosition={moveUserToPosition}
+        isOpen={queueOpen}
+        onToggle={() => setQueueOpen(!queueOpen)}
+      />
     </div>
   );
 };

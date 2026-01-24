@@ -7,9 +7,25 @@ type SignalingMessage =
   | { type: 'ready' }
   | { type: 'error'; error: string };
 
+type QueueUser = {
+  username: string;
+  key: string;
+};
+
+type QueueInfo = {
+  queue: QueueUser[];
+  currentSpeaker: string | null;
+  queueSize: number;
+};
+
 export const useWebRTCAudio = (wsEndpoint: string) => {
   const [playing, setPlaying] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
+  const [queueInfo, setQueueInfo] = useState<QueueInfo>({
+    queue: [],
+    currentSpeaker: null,
+    queueSize: 0,
+  });
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -497,6 +513,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         setupPeerConnection();
         console.log('[WebRTC] Peer connection initialized on socket open');
       }
+      // Request queue status when socket opens (for queue monitoring)
+      setTimeout(() => {
+        if (wsRef.current && isOpenRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send('QUEUE_STATUS');
+        }
+      }, 100);
     };
 
     ws.onmessage = async (event) => {
@@ -514,6 +536,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
         } else if (data.type === 'from') {
           setPlaying(data.name || 'Speaker');
+        } else if (data.type === 'queue-update' || data.type === 'queue-status') {
+          setQueueInfo({
+            queue: data.queue || [],
+            currentSpeaker: data.currentSpeaker || null,
+            queueSize: data.queueSize || 0,
+          });
         } else if (data.type === 'clear') {
           console.log('[WebRTC] Received clear message - resetting audio pipeline');
           setPlaying(null);
@@ -599,9 +627,61 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     ws.onerror = () => {};
   }, [wsEndpoint, handleOffer]);
 
+  const requestQueueStatus = useCallback(() => {
+    const ws = wsRef.current;
+    if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+      ws.send('QUEUE_STATUS');
+    }
+  }, []);
+
+  const kickUser = useCallback((username: string) => {
+    const ws = wsRef.current;
+    if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'kick-user', username }));
+    }
+  }, []);
+
+  const reorderUser = useCallback((username: string, direction: 'up' | 'down') => {
+    const ws = wsRef.current;
+    if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'reorder-user', username, direction }));
+    }
+  }, []);
+
+  const moveUserToPosition = useCallback((username: string, newPosition: number) => {
+    const ws = wsRef.current;
+    if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'move-user-to-position', username, position: newPosition }));
+    }
+  }, []);
+
+  // Open socket for queue monitoring (even when not listening)
+  useEffect(() => {
+    openSocket();
+    
+    // Request queue status when socket opens and periodically
+    const requestStatus = () => {
+      if (wsRef.current && isOpenRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send('QUEUE_STATUS');
+      }
+    };
+    
+    // Request immediately when socket opens (handled in onopen)
+    // Also poll every 2 seconds for queue updates
+    const checkInterval = setInterval(requestStatus, 2000);
+    
+    // Request once after a short delay to ensure socket is ready
+    const timeout = setTimeout(requestStatus, 500);
+    
+    return () => {
+      clearInterval(checkInterval);
+      clearTimeout(timeout);
+    };
+  }, [openSocket]);
+
   const listen = useCallback(() => {
     setListening(true);
-    openSocket();
+    // Socket should already be open from the useEffect above
     
     // Send LISTEN message - peer connection should already be initialized in onopen
     // But ensure it exists just in case
@@ -615,10 +695,15 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           setupPeerConnection();
           console.log('[WebRTC] Peer connection created after LISTEN (fallback)');
         }
+        
+        // Request initial queue status
+        if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+          ws.send('QUEUE_STATUS');
+        }
       }
     }, 50); // Minimal delay - just to ensure socket is ready
     audioRef.current?.play().catch(() => {});
-  }, [openSocket, setupPeerConnection]);
+  }, [setupPeerConnection]);
 
   const stop = useCallback(() => {
     setListening(false);
@@ -702,5 +787,17 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     };
   }, []);
 
-  return { ref: audioRef, listening, playing, listen, stop, skip };
+  return { 
+    ref: audioRef, 
+    listening, 
+    playing, 
+    listen, 
+    stop, 
+    skip,
+    queueInfo,
+    requestQueueStatus,
+    kickUser,
+    reorderUser,
+    moveUserToPosition,
+  };
 };

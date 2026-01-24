@@ -292,7 +292,7 @@ export const useWebRTCStreaming = (
           }
         }
 
-        if (data.type === 'stop') {
+        if (data.type === 'stop' || data.type === 'kicked') {
           setState('off');
           wantSpeakRef.current = false;
           cleanup();
