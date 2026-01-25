@@ -5,12 +5,16 @@ import { useCallback, useState } from 'react';
 type QueueUser = {
   username: string;
   key: string;
+  priority: number;
+  joinTime: string | Date;
 };
 
 type QueueInfo = {
   queue: QueueUser[];
   currentSpeaker: string | null;
+  currentSpeakerPriority?: number;
   queueSize: number;
+  sortMode?: 'fifo' | 'priority';
 };
 
 type Props = {
@@ -18,20 +22,25 @@ type Props = {
   onKickUser: (username: string) => void;
   onReorderUser?: (username: string, direction: 'up' | 'down') => void;
   onMoveToPosition?: (username: string, newPosition: number) => void;
+  onSetSortMode?: (mode: 'fifo' | 'priority') => void;
   isOpen: boolean;
   onToggle: () => void;
 };
+
+type SortMode = 'fifo' | 'priority';
 
 const QueueManagement: React.FC<Props> = ({
   queueInfo,
   onKickUser,
   onReorderUser,
   onMoveToPosition,
+  onSetSortMode,
   isOpen,
   onToggle,
 }) => {
   const [draggedUser, setDraggedUser] = useState<string | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const sortMode = queueInfo.sortMode || 'fifo';
 
   const handleKick = useCallback(
     (username: string) => {
@@ -88,17 +97,41 @@ const QueueManagement: React.FC<Props> = ({
   }, [draggedUser, onMoveToPosition, queueInfo.currentSpeaker]);
 
   // Filter out current speaker from queue to avoid double counting
+  // Queue is already sorted on server based on sortMode
   const queueWithoutCurrent = queueInfo.currentSpeaker
     ? queueInfo.queue.filter((u) => u.username !== queueInfo.currentSpeaker)
     : queueInfo.queue;
 
-  // Combine current speaker (if any) with filtered queue
+  // Combine current speaker (if any) with queue
   const allUsers = queueInfo.currentSpeaker
     ? [
-        { username: queueInfo.currentSpeaker, isCurrentSpeaker: true, key: `current-${queueInfo.currentSpeaker}` },
+        { 
+          username: queueInfo.currentSpeaker, 
+          isCurrentSpeaker: true, 
+          key: `current-${queueInfo.currentSpeaker}`,
+          priority: queueInfo.currentSpeakerPriority ?? 0,
+        },
         ...queueWithoutCurrent.map((u) => ({ ...u, isCurrentSpeaker: false })),
       ]
     : queueWithoutCurrent.map((u) => ({ ...u, isCurrentSpeaker: false }));
+
+  const getPriorityLabel = (priority: number) => {
+    switch (priority) {
+      case 3: return 'Urgent';
+      case 2: return 'High';
+      case 1: return 'Medium';
+      default: return 'Normal';
+    }
+  };
+
+  const getPriorityColor = (priority: number) => {
+    switch (priority) {
+      case 3: return 'bg-red-100 text-red-700 border-red-300';
+      case 2: return 'bg-orange-100 text-orange-700 border-orange-300';
+      case 1: return 'bg-yellow-100 text-yellow-700 border-yellow-300';
+      default: return 'bg-gray-100 text-gray-700 border-gray-300';
+    }
+  };
 
   return (
     <div className="fixed bottom-4 right-4 z-50">
@@ -130,12 +163,33 @@ const QueueManagement: React.FC<Props> = ({
       {isOpen && (
         <div className="absolute bottom-16 right-0 w-80 bg-white rounded-lg shadow-xl border border-gray-200 max-h-96 overflow-hidden flex flex-col">
           {/* Header */}
-          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
-            <div>
-              <h3 className="font-semibold text-gray-900">Speaker Queue</h3>
-              <p className="text-sm text-gray-500">
-                {queueInfo.queueSize} {queueInfo.queueSize === 1 ? 'person' : 'people'} waiting
-              </p>
+          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <h3 className="font-semibold text-gray-900">Speaker Queue</h3>
+                <p className="text-sm text-gray-500">
+                  {queueInfo.queueSize} {queueInfo.queueSize === 1 ? 'person' : 'people'} waiting
+                </p>
+              </div>
+              {onSetSortMode && (
+                <button
+                  onClick={() => {
+                    const newMode = sortMode === 'fifo' ? 'priority' : 'fifo';
+                    onSetSortMode(newMode);
+                  }}
+                  className={clsx(
+                    'px-3 py-1.5 rounded text-sm font-medium transition-colors',
+                    'flex items-center gap-1.5',
+                    sortMode === 'priority'
+                      ? 'bg-blue-600 text-white hover:bg-blue-700'
+                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                  )}
+                  title={sortMode === 'fifo' ? 'Sort by priority' : 'Sort by join time'}
+                >
+                  <Icon icon={sortMode === 'priority' ? 'tabler:sort-descending' : 'tabler:clock'} className="w-4 h-4" />
+                  <span>{sortMode === 'priority' ? 'Priority' : 'FIFO'}</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -186,20 +240,33 @@ const QueueManagement: React.FC<Props> = ({
                           </span>
                         </>
                       )}
-                      <span
-                        className={clsx(
-                          'font-medium truncate',
-                          user.isCurrentSpeaker ? 'text-green-900' : 'text-gray-900'
-                        )}
-                        title={user.username}
-                      >
-                        {user.username}
-                      </span>
-                      {user.isCurrentSpeaker && (
-                        <span className="text-xs text-green-600 font-medium flex-shrink-0">
-                          Speaking
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <span
+                          className={clsx(
+                            'font-medium truncate',
+                            user.isCurrentSpeaker ? 'text-green-900' : 'text-gray-900'
+                          )}
+                          title={user.username}
+                        >
+                          {user.username}
                         </span>
-                      )}
+                        {!user.isCurrentSpeaker && user.priority > 0 && (
+                          <span
+                            className={clsx(
+                              'px-1.5 py-0.5 rounded text-xs font-medium border flex-shrink-0',
+                              getPriorityColor(user.priority)
+                            )}
+                            title={`Priority: ${getPriorityLabel(user.priority)}`}
+                          >
+                            {getPriorityLabel(user.priority)}
+                          </span>
+                        )}
+                        {user.isCurrentSpeaker && (
+                          <span className="text-xs text-green-600 font-medium flex-shrink-0">
+                            Speaking
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-1">
                       {!user.isCurrentSpeaker && onReorderUser && (
@@ -236,18 +303,20 @@ const QueueManagement: React.FC<Props> = ({
                           </button>
                         </>
                       )}
-                      <button
-                        onClick={() => handleKick(user.username)}
-                        className={clsx(
-                          'p-1.5 rounded transition-colors flex-shrink-0',
-                          'hover:bg-red-100 text-red-600 hover:text-red-700',
-                          'focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1'
-                        )}
-                        aria-label={`Remove ${user.username} from queue`}
-                        title="Remove from queue"
-                      >
-                        <Icon icon="tabler:x" className="w-4 h-4" />
-                      </button>
+                      {!user.isCurrentSpeaker && (
+                        <button
+                          onClick={() => handleKick(user.username)}
+                          className={clsx(
+                            'p-1.5 rounded transition-colors flex-shrink-0',
+                            'hover:bg-red-100 text-red-600 hover:text-red-700',
+                            'focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1'
+                          )}
+                          aria-label={`Remove ${user.username} from queue`}
+                          title="Remove from queue"
+                        >
+                          <Icon icon="tabler:x" className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}

@@ -12,14 +12,16 @@ type SignalingMessage =
   | { type: 'offer'; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; sdp: RTCSessionDescriptionInit }
   | { type: 'ice-candidate'; candidate: RTCIceCandidateInit }
-  | { type: 'ready'; username?: string }
+  | { type: 'ready'; username?: string; priority?: number }
   | { type: 'stop' }
+  | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
 export const useWebRTCStreaming = (
   wsEndpoint: string,
   username: string = '',
   audioConfig?: AudioConfig,
+  priority: number = 0,
 ) => {
   const [state, setState] = useState<StreamingState>('off');
   const [connected, setConnected] = useState(false);
@@ -31,6 +33,12 @@ export const useWebRTCStreaming = (
   const isOpenRef = useRef(false);
   const wantSpeakRef = useRef(false);
   const pendingOfferRef = useRef(false);
+  const priorityRef = useRef(priority);
+  
+  // Update priority ref when it changes
+  useEffect(() => {
+    priorityRef.current = priority;
+  }, [priority]);
 
   // Detect device types for specific handling
   const isiPhone = /iPhone/i.test(navigator.userAgent);
@@ -219,7 +227,7 @@ export const useWebRTCStreaming = (
       setConnected(true);
 
       if (wantSpeakRef.current) {
-        send({ type: 'ready', username });
+        send({ type: 'ready', username, priority: priorityRef.current });
       }
     };
 
@@ -300,7 +308,7 @@ export const useWebRTCStreaming = (
 
         if (data.type === 'need_rts') {
           if (wantSpeakRef.current) {
-            send({ type: 'ready', username });
+            send({ type: 'ready', username, priority: priorityRef.current });
           }
         }
       } catch {
@@ -323,7 +331,7 @@ export const useWebRTCStreaming = (
 
         if (msg === 'NEED_RTS') {
           if (wantSpeakRef.current) {
-            send({ type: 'ready', username });
+            send({ type: 'ready', username, priority: priorityRef.current });
           }
         }
       }
@@ -345,8 +353,22 @@ export const useWebRTCStreaming = (
   const beginStream = useCallback(() => {
     wantSpeakRef.current = true;
     setState('waiting');
-    send({ type: 'ready', username });
-  }, [send, username]);
+    send({ type: 'ready', username, priority });
+  }, [send, username, priority]);
+
+  // Update priority while in queue (skip initial mount)
+  const isInitialMount = useRef(true);
+  useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
+    
+    // If waiting and priority changes, send update
+    if (state === 'waiting' && wantSpeakRef.current && isOpenRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+      send({ type: 'update-priority', priority });
+    }
+  }, [priority, state, send]);
 
   const endStream = useCallback(() => {
     wantSpeakRef.current = false;

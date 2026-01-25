@@ -27,6 +27,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     kickUser,
     reorderUser,
     moveUserToPosition,
+    setQueueSortMode,
   } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
   
   const [queueOpen, setQueueOpen] = useState(false);
@@ -144,6 +145,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
         onKickUser={kickUser}
         onReorderUser={reorderUser}
         onMoveToPosition={moveUserToPosition}
+        onSetSortMode={setQueueSortMode}
         isOpen={queueOpen}
         onToggle={() => setQueueOpen(!queueOpen)}
       />

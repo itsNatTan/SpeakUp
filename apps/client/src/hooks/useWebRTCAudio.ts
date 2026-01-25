@@ -540,7 +540,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           setQueueInfo({
             queue: data.queue || [],
             currentSpeaker: data.currentSpeaker || null,
+            currentSpeakerPriority: data.currentSpeakerPriority,
             queueSize: data.queueSize || 0,
+            sortMode: data.sortMode || 'fifo',
           });
         } else if (data.type === 'clear') {
           console.log('[WebRTC] Received clear message - resetting audio pipeline');
@@ -652,6 +654,13 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     const ws = wsRef.current;
     if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'move-user-to-position', username, position: newPosition }));
+    }
+  }, []);
+
+  const setQueueSortMode = useCallback((mode: 'fifo' | 'priority') => {
+    const ws = wsRef.current;
+    if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'set-queue-sort-mode', mode }));
     }
   }, []);
 
@@ -799,5 +808,6 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     kickUser,
     reorderUser,
     moveUserToPosition,
+    setQueueSortMode,
   };
 };

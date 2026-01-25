@@ -3,15 +3,20 @@ import random from '../utils/random';
 import { SendQueue } from './queue';
 
 type BufferSlot = { start: Date | null; data: ArrayBuffer[] };
+type ClientInfo = { ws: WebSocket; priority: number; joinTime: Date; manualOrder?: number };
 
 export class MessageHandler {
   private readonly sendQueue: SendQueue;
   private listener: WebSocket | null;
   private clientKeyMap: Record<string, WebSocket>;
+  private clientInfoMap: Record<string, ClientInfo>; // Store client info including priority
   private storageBuffer: Record<string, BufferSlot>;
   
   // Track all instructor connections (for queue updates even when not listening)
   private instructorConnections: Set<WebSocket> = new Set();
+  
+  // Queue sort mode: 'fifo' or 'priority'
+  private queueSortMode: 'fifo' | 'priority' = 'fifo';
 
   // Active speaker tracking
   private lastSenderKey: string | undefined = undefined;
@@ -29,6 +34,7 @@ export class MessageHandler {
     this.sendQueue = new SendQueue();
     this.listener = null;
     this.clientKeyMap = {};
+    this.clientInfoMap = {};
     this.storageBuffer = {};
   }
 
@@ -49,6 +55,12 @@ export class MessageHandler {
           }
           if (signal.type === 'move-user-to-position') {
             return this.handleMoveUserToPosition.bind(this, signal.username, signal.position);
+          }
+          if (signal.type === 'set-queue-sort-mode') {
+            return this.handleSetQueueSortMode.bind(this, signal.mode);
+          }
+          if (signal.type === 'update-priority') {
+            return this.handleUpdatePriority.bind(this, signal.priority);
           }
           return this.handleWebRTCSignaling.bind(this, signal);
         }
@@ -84,9 +96,34 @@ export class MessageHandler {
     }
   }
 
-  private trackClient(ws: WebSocket, key: string) { this.clientKeyMap[key] = ws; }
+  private trackClient(ws: WebSocket, key: string, priority: number = 0) { 
+    this.clientKeyMap[key] = ws;
+    // Use existing manualOrder if client already exists (e.g., reconnecting)
+    const existingInfo = this.clientInfoMap[key];
+    this.clientInfoMap[key] = { 
+      ws, 
+      priority, 
+      joinTime: existingInfo?.joinTime ?? new Date(),
+      manualOrder: existingInfo?.manualOrder,
+    };
+  }
+  
+  private updateManualOrder() {
+    // Update manual order for all clients based on their current position
+    const queueClients = this.sendQueue.getAllClients();
+    queueClients.forEach((client, index) => {
+      const key = this.whichClient(client);
+      if (key && this.clientInfoMap[key]) {
+        this.clientInfoMap[key].manualOrder = index;
+      }
+    });
+  }
   private whichClient(ws: WebSocket) { return Object.entries(this.clientKeyMap).find(([, c]) => c === ws)?.[0]; }
   private getClientName(ws: WebSocket) { const k = this.whichClient(ws); return k ? k.slice(0, k.length - 6) : undefined; }
+  private getClientPriority(ws: WebSocket): number {
+    const key = this.whichClient(ws);
+    return key ? (this.clientInfoMap[key]?.priority ?? 0) : 0;
+  }
   private ensureBufferKey(key: string) { if (!this.storageBuffer[key]) this.storageBuffer[key] = { start: null, data: [] }; }
 
   private flushBuffer(client: WebSocket) {
@@ -135,7 +172,8 @@ export class MessageHandler {
 
   private handleRTS = (ws: WebSocket) => {
     this.sendQueue.registerClient(ws);
-    this.trackClient(ws, this.bufferKey!);
+    // RTS doesn't include priority, default to 0
+    this.trackClient(ws, this.bufferKey!, 0);
     const key = this.whichClient(ws)!;
     this.ensureBufferKey(key);
 
@@ -350,11 +388,15 @@ export class MessageHandler {
 
   private getQueueInfo = () => {
     const queueClients = this.sendQueue.getAllClients();
-    const queue: Array<{ username: string; key: string }> = [];
+    const queue: Array<{ username: string; key: string; priority: number; joinTime: Date }> = [];
     
     const currentSpeaker = this.currentCtsKey 
       ? this.currentCtsKey.slice(0, this.currentCtsKey.length - 6)
       : null;
+    
+    const currentSpeakerPriority = this.currentCtsKey 
+      ? (this.clientInfoMap[this.currentCtsKey]?.priority ?? 0)
+      : 0;
     
     // Build queue, excluding current speaker
     queueClients.forEach((client) => {
@@ -363,7 +405,13 @@ export class MessageHandler {
         const username = key.slice(0, key.length - 6);
         // Only add to queue if not the current speaker
         if (username !== currentSpeaker) {
-          queue.push({ username, key });
+          const info = this.clientInfoMap[key];
+          queue.push({ 
+            username, 
+            key,
+            priority: info?.priority ?? 0,
+            joinTime: info?.joinTime ?? new Date(),
+          });
         }
       }
     });
@@ -371,7 +419,9 @@ export class MessageHandler {
     return {
       queue,
       currentSpeaker,
+      currentSpeakerPriority,
       queueSize: queue.length, // Queue size excludes current speaker
+      sortMode: this.queueSortMode,
     };
   };
 
@@ -396,8 +446,8 @@ export class MessageHandler {
   };
 
   private handleKickUser = (username: string, ws: WebSocket) => {
-    // Only listener can kick users
-    if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) {
+    // Only instructor can kick users (not just active listener)
+    if (!this.instructorConnections.has(ws) || ws.readyState !== WebSocket.OPEN) {
       return;
     }
 
@@ -417,7 +467,7 @@ export class MessageHandler {
     if (!targetClient || !targetKey) {
       // User not found
       try {
-        this.listener.send(JSON.stringify({ type: 'kick-error', message: 'User not found in queue' }));
+        ws.send(JSON.stringify({ type: 'kick-error', message: 'User not found in queue' }));
       } catch {}
       return;
     }
@@ -440,7 +490,9 @@ export class MessageHandler {
       this.currentCtsKey = undefined;
 
       try {
-        this.listener.send(JSON.stringify({ type: 'clear' }));
+        if (this.listener && this.listener.readyState === WebSocket.OPEN) {
+          this.listener.send(JSON.stringify({ type: 'clear' }));
+        }
       } catch {}
     }
 
@@ -502,6 +554,8 @@ export class MessageHandler {
     // Move the client in the queue
     const moved = this.sendQueue.moveClient(targetClient, direction);
     if (moved) {
+      // Update manual order after manual reordering
+      this.updateManualOrder();
       // Send queue update
       this.sendQueueUpdate();
     } else {
@@ -547,6 +601,8 @@ export class MessageHandler {
     // Move the client to the specified position
     const moved = this.sendQueue.moveClientToPosition(targetClient, position);
     if (moved) {
+      // Update manual order after manual reordering
+      this.updateManualOrder();
       // Send queue update
       this.sendQueueUpdate();
     } else {
@@ -561,19 +617,56 @@ export class MessageHandler {
     if (signal.type === 'ready') {
       // Student wants to speak (WebRTC version of RTS)
       const senderKey = this.whichClient(ws);
+      const priority = signal.priority ?? 0;
+      
       if (!senderKey) {
         // Need to register this client first
         const username = signal.username || 'WebRTC';
         const key = `${username}-${random.generateLowercase(5)}`;
         this.bufferKey = key;
-        this.trackClient(ws, key);
+        this.trackClient(ws, key, priority);
         this.ensureBufferKey(key);
         ws.on('close', () => this.cleanupOnClose(ws));
+      } else {
+        // Update priority if client already exists
+        if (this.clientInfoMap[senderKey]) {
+          this.clientInfoMap[senderKey].priority = priority;
+        }
       }
 
       // Re-register client in queue if not already there (in case they were removed after stop)
       if (!this.sendQueue.contains(ws)) {
         this.sendQueue.registerClient(ws);
+        
+        // Initialize manual order for new client if they don't have one
+        const senderKey = this.whichClient(ws);
+        if (senderKey && this.clientInfoMap[senderKey] && this.clientInfoMap[senderKey].manualOrder === undefined) {
+          const queueClients = this.sendQueue.getAllClients();
+          const currentIndex = queueClients.indexOf(ws);
+          if (currentIndex !== -1) {
+            this.clientInfoMap[senderKey].manualOrder = currentIndex;
+          }
+        }
+        
+        // If in priority mode, re-sort after adding (excluding current speaker)
+        if (this.queueSortMode === 'priority') {
+          const currentSpeakerWs = this.currentCtsKey 
+            ? this.clientKeyMap[this.currentCtsKey] 
+            : undefined;
+          this.sendQueue.sortByPriority(
+            (client) => this.getClientPriority(client),
+            (client) => {
+              const clientKey = this.whichClient(client);
+              return clientKey ? (this.clientInfoMap[clientKey]?.joinTime ?? new Date()) : new Date();
+            },
+            (client) => {
+              const clientKey = this.whichClient(client);
+              return clientKey ? this.clientInfoMap[clientKey]?.manualOrder : undefined;
+            },
+            currentSpeakerWs // Exclude current speaker from sort
+          );
+        }
+        
         // Send queue update to listener
         this.sendQueueUpdate();
       }
@@ -703,9 +796,99 @@ export class MessageHandler {
     }
 
     delete this.clientKeyMap[k];
+    delete this.clientInfoMap[k];
     delete this.storageBuffer[k];
     
     // Send queue update when client leaves
+    this.sendQueueUpdate();
+  };
+
+  private handleSetQueueSortMode = (mode: 'fifo' | 'priority', ws: WebSocket) => {
+    // Only instructor can set sort mode
+    if (!this.instructorConnections.has(ws) || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    this.queueSortMode = mode;
+    
+    // Get current speaker's WebSocket to exclude from sorting
+    const currentSpeakerWs = this.currentCtsKey 
+      ? this.clientKeyMap[this.currentCtsKey] 
+      : undefined;
+    
+    // Before sorting, ensure all clients have a manual order (based on current position)
+    // This preserves the current order when switching modes
+    const queueClients = this.sendQueue.getAllClients();
+    queueClients.forEach((client, index) => {
+      const key = this.whichClient(client);
+      if (key && this.clientInfoMap[key] && this.clientInfoMap[key].manualOrder === undefined) {
+        this.clientInfoMap[key].manualOrder = index;
+      }
+    });
+    
+    // Reorder the actual queue based on mode (excluding current speaker)
+    if (mode === 'priority') {
+      this.sendQueue.sortByPriority(
+        (client) => this.getClientPriority(client),
+        (client) => {
+          const key = this.whichClient(client);
+          return key ? (this.clientInfoMap[key]?.joinTime ?? new Date()) : new Date();
+        },
+        (client) => {
+          const key = this.whichClient(client);
+          return key ? this.clientInfoMap[key]?.manualOrder : undefined;
+        },
+        currentSpeakerWs // Exclude current speaker from sort
+      );
+    } else {
+      // FIFO mode - use manual order if available, otherwise join time (excluding current speaker)
+      this.sendQueue.sortByFifo(
+        (client) => {
+          const key = this.whichClient(client);
+          return key ? (this.clientInfoMap[key]?.joinTime ?? new Date()) : new Date();
+        },
+        (client) => {
+          const key = this.whichClient(client);
+          return key ? this.clientInfoMap[key]?.manualOrder : undefined;
+        },
+        currentSpeakerWs // Exclude current speaker from sort
+      );
+    }
+
+    // Send queue update
+    this.sendQueueUpdate();
+  };
+
+  private handleUpdatePriority = (priority: number, ws: WebSocket) => {
+    // Student updating their priority
+    const key = this.whichClient(ws);
+    if (!key) return;
+
+    // Update priority
+    if (this.clientInfoMap[key]) {
+      this.clientInfoMap[key].priority = priority;
+    }
+
+    // If in priority mode, re-sort the queue (excluding current speaker)
+    if (this.queueSortMode === 'priority') {
+      const currentSpeakerWs = this.currentCtsKey 
+        ? this.clientKeyMap[this.currentCtsKey] 
+        : undefined;
+      this.sendQueue.sortByPriority(
+        (client) => this.getClientPriority(client),
+        (client) => {
+          const clientKey = this.whichClient(client);
+          return clientKey ? (this.clientInfoMap[clientKey]?.joinTime ?? new Date()) : new Date();
+        },
+        (client) => {
+          const clientKey = this.whichClient(client);
+          return clientKey ? this.clientInfoMap[clientKey]?.manualOrder : undefined;
+        },
+        currentSpeakerWs // Exclude current speaker from sort
+      );
+    }
+
+    // Send queue update
     this.sendQueueUpdate();
   };
 }

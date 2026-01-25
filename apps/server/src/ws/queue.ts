@@ -76,4 +76,87 @@ export class SendQueue {
     this.clients.splice(newPosition, 0, client);
     return true;
   }
+
+  public sortByPriority(
+    getPriority: (client: Client) => number, 
+    getJoinTime: (client: Client) => Date,
+    getManualOrder: (client: Client) => number | undefined,
+    excludeClient?: Client
+  ): void {
+    // If there's a client to exclude (current speaker), remove them temporarily
+    let excludedClient: Client | undefined = undefined;
+    let excludedIndex = -1;
+    
+    if (excludeClient) {
+      excludedIndex = this.clients.indexOf(excludeClient);
+      if (excludedIndex !== -1) {
+        excludedClient = this.clients.splice(excludedIndex, 1)[0];
+      }
+    }
+    
+    // Sort by priority (descending), then by manual order (if exists), then by join time (ascending)
+    this.clients.sort((a, b) => {
+      const priorityA = getPriority(a);
+      const priorityB = getPriority(b);
+      if (priorityB !== priorityA) {
+        return priorityB - priorityA;
+      }
+      // Within same priority, use manual order if available
+      const manualOrderA = getManualOrder(a);
+      const manualOrderB = getManualOrder(b);
+      if (manualOrderA !== undefined && manualOrderB !== undefined) {
+        return manualOrderA - manualOrderB;
+      }
+      // Fall back to join time
+      const timeA = getJoinTime(a).getTime();
+      const timeB = getJoinTime(b).getTime();
+      return timeA - timeB;
+    });
+    
+    // Re-insert excluded client at the beginning (they're the current speaker)
+    if (excludedClient !== undefined) {
+      this.clients.unshift(excludedClient);
+    }
+  }
+
+  public sortByFifo(
+    getJoinTime: (client: Client) => Date, 
+    getManualOrder: (client: Client) => number | undefined,
+    excludeClient?: Client
+  ): void {
+    // If there's a client to exclude (current speaker), remove them temporarily
+    let excludedClient: Client | undefined = undefined;
+    let excludedIndex = -1;
+    
+    if (excludeClient) {
+      excludedIndex = this.clients.indexOf(excludeClient);
+      if (excludedIndex !== -1) {
+        excludedClient = this.clients.splice(excludedIndex, 1)[0];
+      }
+    }
+    
+    // Sort by manual order (if exists), then by join time (ascending) - FIFO order
+    // This preserves manual reordering while falling back to join time for new clients
+    this.clients.sort((a, b) => {
+      const manualOrderA = getManualOrder(a);
+      const manualOrderB = getManualOrder(b);
+      
+      // If both have manual order, use it
+      if (manualOrderA !== undefined && manualOrderB !== undefined) {
+        return manualOrderA - manualOrderB;
+      }
+      // If only one has manual order, prioritize it
+      if (manualOrderA !== undefined) return -1;
+      if (manualOrderB !== undefined) return 1;
+      // Otherwise, use join time
+      const timeA = getJoinTime(a).getTime();
+      const timeB = getJoinTime(b).getTime();
+      return timeA - timeB;
+    });
+    
+    // Re-insert excluded client at the beginning (they're the current speaker)
+    if (excludedClient !== undefined) {
+      this.clients.unshift(excludedClient);
+    }
+  }
 }
