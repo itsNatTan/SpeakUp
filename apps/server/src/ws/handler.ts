@@ -1,6 +1,7 @@
 import { RawData, WebSocket } from 'ws';
 import random from '../utils/random';
 import { SendQueue } from './queue';
+import { analyticsService } from '../services/analytics.service';
 
 type BufferSlot = { start: Date | null; data: ArrayBuffer[] };
 type ClientInfo = { ws: WebSocket; priority: number; joinTime: Date; manualOrder?: number };
@@ -166,6 +167,15 @@ export class MessageHandler {
 
     try { client.send('CTS'); } catch {}
     
+    // Track speaking start
+    const username = this.getClientName(client) || 'Speaker';
+    analyticsService.recordEvent(this.roomCode, {
+      username,
+      eventType: 'speak_start',
+      timestamp: new Date(),
+      priority: this.getClientPriority(client),
+    });
+    
     // Send queue update when speaker changes
     this.sendQueueUpdate();
   };
@@ -178,6 +188,15 @@ export class MessageHandler {
     this.ensureBufferKey(key);
 
     ws.on('close', () => this.cleanupOnClose(ws));
+
+    // Track queue join
+    const username = this.getClientName(ws) || 'Speaker';
+    analyticsService.recordEvent(this.roomCode, {
+      username,
+      eventType: 'queue_join',
+      timestamp: new Date(),
+      priority: 0,
+    });
 
     const isFirst = this.sendQueue.hasPriority(ws);
     const hasListener = this.listener && this.listener.readyState === WebSocket.OPEN;
@@ -197,14 +216,35 @@ export class MessageHandler {
       if (this.currentCtsKey) {
         const senderWs = this.clientKeyMap[this.currentCtsKey];
         if (senderWs) {
+          // Track speaking end before moving to queue
+          const username = this.getClientName(senderWs) || 'Speaker';
+          analyticsService.recordEvent(this.roomCode, {
+            username,
+            eventType: 'speak_end',
+            timestamp: new Date(),
+            priority: this.getClientPriority(senderWs),
+          });
+          
+          // Instead of removing, place current speaker at top of queue
+          // First remove them from their current position
           this.sendQueue.removeClient(senderWs);
+          // Then prepend them to the front of the queue
+          this.sendQueue.prependClient(senderWs);
+          // Update manual order to reflect this change
+          this.updateManualOrder();
+          
+          // Send stop message to pause their speaking
           try { 
             senderWs.send(JSON.stringify({ type: 'stop' }));
           } catch {}
         }
       }
+      // Clear current speaker tracking but keep them in queue
       this.lastSenderKey = undefined;
       this.currentCtsKey = undefined;
+      
+      // Send queue update to reflect the change
+      this.sendQueueUpdate();
       return;
     }
 
@@ -218,12 +258,31 @@ export class MessageHandler {
       const file = this.flushBuffer(ws);
       if (file) this.onIncomingFile?.(file.filename, file.data);
 
+      // Track speaking end
+      const username = this.getClientName(ws) || 'Speaker';
+      analyticsService.recordEvent(this.roomCode, {
+        username,
+        eventType: 'speak_end',
+        timestamp: new Date(),
+        priority: this.getClientPriority(ws),
+      });
+
       try { 
         this.listener?.send(JSON.stringify({ type: 'clear' }));
       } catch {}
     }
 
     const nextClient = this.sendQueue.removeClient(ws);
+    
+    // Track queue leave
+    if (senderKey) {
+      const username = this.getClientName(ws) || 'Speaker';
+      analyticsService.recordEvent(this.roomCode, {
+        username,
+        eventType: 'queue_leave',
+        timestamp: new Date(),
+      });
+    }
     if (nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
       this.grantCTSWebRTC(nextClient);
     }
@@ -330,6 +389,19 @@ export class MessageHandler {
       console.log('[Server] Stopping active speaker');
       const file = this.flushBuffer(activeStudentWs);
       if (file) { try { this.onIncomingFile?.(file.filename, file.data); } catch {} }
+      
+      // Track speaking end
+      const activeKey = this.currentCtsKey || this.lastSenderKey;
+      if (activeKey) {
+        const username = this.getClientName(activeStudentWs) || 'Speaker';
+        analyticsService.recordEvent(this.roomCode, {
+          username,
+          eventType: 'speak_end',
+          timestamp: new Date(),
+          priority: this.getClientPriority(activeStudentWs),
+        });
+      }
+      
       if (activeStudentWs.readyState === WebSocket.OPEN) { 
         try { 
           activeStudentWs.send(JSON.stringify({ type: 'stop' }));
@@ -480,6 +552,15 @@ export class MessageHandler {
       const file = this.flushBuffer(targetClient);
       if (file) { try { this.onIncomingFile?.(file.filename, file.data); } catch {} }
       
+      // Track speaking end
+      const username = this.getClientName(targetClient) || 'Speaker';
+      analyticsService.recordEvent(this.roomCode, {
+        username,
+        eventType: 'speak_end',
+        timestamp: new Date(),
+        priority: this.clientInfoMap[targetKey]?.priority,
+      });
+      
       if (targetClient.readyState === WebSocket.OPEN) {
         try {
           targetClient.send(JSON.stringify({ type: 'stop' }));
@@ -503,6 +584,15 @@ export class MessageHandler {
     if (isCurrentSpeaker && nextClient && this.listener && this.listener.readyState === WebSocket.OPEN) {
       this.grantCTSWebRTC(nextClient);
     }
+
+    // Track kick event
+    const kickedUsername = targetKey.slice(0, targetKey.length - 6);
+    analyticsService.recordEvent(this.roomCode, {
+      username: kickedUsername,
+      eventType: 'kicked',
+      timestamp: new Date(),
+      priority: this.clientInfoMap[targetKey]?.priority,
+    });
 
     // Send kicked message to user (this will turn off their speaker)
     if (targetClient.readyState === WebSocket.OPEN) {
@@ -638,6 +728,15 @@ export class MessageHandler {
       if (!this.sendQueue.contains(ws)) {
         this.sendQueue.registerClient(ws);
         
+        // Track queue join
+        const username = signal.username || this.getClientName(ws) || 'Speaker';
+        analyticsService.recordEvent(this.roomCode, {
+          username,
+          eventType: 'queue_join',
+          timestamp: new Date(),
+          priority,
+        });
+        
         // Initialize manual order for new client if they don't have one
         const senderKey = this.whichClient(ws);
         if (senderKey && this.clientInfoMap[senderKey] && this.clientInfoMap[senderKey].manualOrder === undefined) {
@@ -769,6 +868,14 @@ export class MessageHandler {
       client.send(JSON.stringify({ type: 'cts' }));
     } catch {}
     
+    // Track speaking start
+    analyticsService.recordEvent(this.roomCode, {
+      username: name,
+      eventType: 'speak_start',
+      timestamp: new Date(),
+      priority: this.getClientPriority(client),
+    });
+    
     // Send queue update when speaker changes
     this.sendQueueUpdate();
   };
@@ -866,7 +973,19 @@ export class MessageHandler {
 
     // Update priority
     if (this.clientInfoMap[key]) {
+      const oldPriority = this.clientInfoMap[key].priority;
       this.clientInfoMap[key].priority = priority;
+      
+      // Track priority change
+      const username = this.getClientName(ws) || 'Speaker';
+      if (oldPriority !== priority) {
+        analyticsService.recordEvent(this.roomCode, {
+          username,
+          eventType: 'priority_change',
+          timestamp: new Date(),
+          priority,
+        });
+      }
     }
 
     // If in priority mode, re-sort the queue (excluding current speaker)

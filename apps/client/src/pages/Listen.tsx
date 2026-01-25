@@ -5,6 +5,7 @@ import { Icon } from '@iconify/react';
 import clsx from 'clsx';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import Analytics from '../components/Analytics';
 import QueueManagement from '../components/QueueManagement';
 import RoomInfo from '../components/RoomInfo';
 import { useWebRTCAudio } from '../hooks/useWebRTCAudio';
@@ -31,6 +32,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
   } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
   
   const [queueOpen, setQueueOpen] = useState(false);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
 
   const handleClick = useCallback(() => {
     if (listening) {
@@ -139,16 +141,23 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
         Leave
       </button>
 
-      {/* Queue Management - Always visible */}
-      <QueueManagement
-        queueInfo={queueInfo}
-        onKickUser={kickUser}
-        onReorderUser={reorderUser}
-        onMoveToPosition={moveUserToPosition}
-        onSetSortMode={setQueueSortMode}
-        isOpen={queueOpen}
-        onToggle={() => setQueueOpen(!queueOpen)}
-      />
+      {/* Queue Management and Analytics Buttons - Stacked */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-3">
+        <QueueManagement
+          queueInfo={queueInfo}
+          onKickUser={kickUser}
+          onReorderUser={reorderUser}
+          onMoveToPosition={moveUserToPosition}
+          onSetSortMode={setQueueSortMode}
+          isOpen={queueOpen}
+          onToggle={() => setQueueOpen(!queueOpen)}
+        />
+        <Analytics
+          roomCode={roomCode}
+          isOpen={analyticsOpen}
+          onToggle={() => setAnalyticsOpen(!analyticsOpen)}
+        />
+      </div>
     </div>
   );
 };
