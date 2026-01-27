@@ -19,6 +19,7 @@ type SpeakerStats = {
 type AnalyticsSummary = {
   roomCode: string;
   uniqueSpeakers: number;
+  uniqueQueuers: number;
   totalSpeaks: number;
   averageSpeaksPerSpeaker: string;
   totalSpeakingTime: number;
@@ -89,11 +90,21 @@ const Analytics: React.FC<AnalyticsProps> = ({ roomCode, isOpen, onToggle }) => 
       const response = await fetch(`${SERVER_PROTOCOL}://${SERVER_HOST}/api/v1/analytics/${roomCode}/export`);
       if (!response.ok) throw new Error('Failed to export CSV');
       
+      // Get filename from Content-Disposition header
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = `analytics-${roomCode}.csv`;
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+        if (filenameMatch) {
+          filename = filenameMatch[1];
+        }
+      }
+      
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `analytics-${roomCode}-${Date.now()}.csv`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -114,26 +125,27 @@ const Analytics: React.FC<AnalyticsProps> = ({ roomCode, isOpen, onToggle }) => 
     return `${remainingSeconds}s`;
   };
 
-  if (!isOpen) {
-    return (
+  return (
+    <div className="relative">
+      {/* Toggle Button - Always visible */}
       <button
         onClick={onToggle}
         className={clsx(
           'w-14 h-14 rounded-full shadow-lg flex items-center justify-center',
           'transition-all duration-200',
-          'bg-white hover:bg-gray-100 text-gray-700 border-2 border-gray-300'
+          isOpen
+            ? 'bg-blue-600 hover:bg-blue-700 text-white'
+            : 'bg-white hover:bg-gray-100 text-gray-700 border-2 border-gray-300'
         )}
-        aria-label="Open analytics"
+        aria-label={isOpen ? 'Close analytics' : 'Open analytics'}
         title="Analytics"
       >
         <Icon icon="tabler:chart-bar" className="w-6 h-6" />
       </button>
-    );
-  }
 
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+      {/* Analytics Modal - Above button when open */}
+      {isOpen && (
+        <div className="absolute bottom-16 right-0 w-[90vw] max-w-4xl bg-white rounded-lg shadow-xl border border-gray-200 max-h-[85vh] overflow-hidden flex flex-col z-50">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b bg-gray-50">
           <h2 className="text-2xl font-bold flex items-center gap-2">
@@ -180,6 +192,7 @@ const Analytics: React.FC<AnalyticsProps> = ({ roomCode, isOpen, onToggle }) => 
                 <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
                   <div className="text-sm text-gray-600">Unique Speakers</div>
                   <div className="text-2xl font-bold text-blue-600">{summary.uniqueSpeakers}</div>
+                  <div className="text-xs text-gray-500 mt-1">({summary.uniqueQueuers} queued)</div>
                 </div>
                 <div className="bg-green-50 p-4 rounded-lg border border-green-200">
                   <div className="text-sm text-gray-600">Total Speaks</div>
@@ -263,7 +276,8 @@ const Analytics: React.FC<AnalyticsProps> = ({ roomCode, isOpen, onToggle }) => 
             </>
           )}
         </div>
-      </div>
+        </div>
+      )}
     </div>
   );
 };

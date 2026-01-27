@@ -22,6 +22,7 @@ type SpeakerStats = {
 class AnalyticsService {
   private events: Map<string, SpeakerEvent[]> = new Map(); // roomCode -> events
   private currentSpeakers: Map<string, Map<string, Date>> = new Map(); // roomCode -> username -> startTime
+  private pausedTime: Map<string, Map<string, number>> = new Map(); // roomCode -> username -> paused milliseconds
 
   recordEvent(roomCode: string, event: SpeakerEvent): void {
     if (!this.events.has(roomCode)) {
@@ -40,11 +41,33 @@ class AnalyticsService {
       if (roomSpeakers) {
         const startTime = roomSpeakers.get(event.username);
         if (startTime) {
-          event.duration = event.timestamp.getTime() - startTime.getTime();
+          // Calculate duration excluding paused time
+          let pausedDuration = 0;
+          if (!this.pausedTime.has(roomCode)) {
+            this.pausedTime.set(roomCode, new Map());
+          }
+          const roomPausedTime = this.pausedTime.get(roomCode)!;
+          pausedDuration = roomPausedTime.get(event.username) || 0;
+          
+          const totalDuration = event.timestamp.getTime() - startTime.getTime();
+          event.duration = totalDuration - pausedDuration;
+          
+          // Clean up
           roomSpeakers.delete(event.username);
+          roomPausedTime.delete(event.username);
         }
       }
     }
+  }
+
+  adjustSpeakingStartTime(roomCode: string, username: string, pauseDuration: number): void {
+    // When resuming after deafening, adjust the start time to account for paused duration
+    if (!this.pausedTime.has(roomCode)) {
+      this.pausedTime.set(roomCode, new Map());
+    }
+    const roomPausedTime = this.pausedTime.get(roomCode)!;
+    const currentPaused = roomPausedTime.get(username) || 0;
+    roomPausedTime.set(username, currentPaused + pauseDuration);
   }
 
   getStats(roomCode: string): SpeakerStats[] {
@@ -106,9 +129,25 @@ class AnalyticsService {
   }
 
   getUniqueSpeakers(roomCode: string): number {
+    // Only count people who actually spoke (have speak_start events)
     const events = this.events.get(roomCode) || [];
-    const uniqueUsernames = new Set(events.map((e) => e.username));
-    return uniqueUsernames.size;
+    const uniqueSpeakers = new Set(
+      events
+        .filter(e => e.eventType === 'speak_start')
+        .map(e => e.username)
+    );
+    return uniqueSpeakers.size;
+  }
+
+  getUniqueQueuers(roomCode: string): number {
+    // Count people who joined the queue (have queue_join events)
+    const events = this.events.get(roomCode) || [];
+    const uniqueQueuers = new Set(
+      events
+        .filter(e => e.eventType === 'queue_join')
+        .map(e => e.username)
+    );
+    return uniqueQueuers.size;
   }
 
   getTotalSpeakingTime(roomCode: string): number {
@@ -135,6 +174,7 @@ class AnalyticsService {
     csv += `Room Code: ${roomCode}\n`;
     csv += `Export Date: ${new Date().toISOString()}\n`;
     csv += `Unique Speakers: ${this.getUniqueSpeakers(roomCode)}\n`;
+    csv += `Unique Queuers: ${this.getUniqueQueuers(roomCode)}\n`;
     csv += `Total Speaking Time: ${(this.getTotalSpeakingTime(roomCode) / 1000 / 60).toFixed(2)} minutes\n`;
     csv += '\n';
 

@@ -22,6 +22,9 @@ export class MessageHandler {
   // Active speaker tracking
   private lastSenderKey: string | undefined = undefined;
   private currentCtsKey: string | undefined = undefined;
+  private pausedSpeakerKey: string | undefined = undefined; // Track paused speaker when deafened
+  private isListenerDeafened: boolean = false; // Track if listener is deafened
+  private speakingPauseStartTime: Date | undefined = undefined; // Track when speaking was paused due to deafening
 
   private bufferKey: string | null = null;
 
@@ -167,14 +170,26 @@ export class MessageHandler {
 
     try { client.send('CTS'); } catch {}
     
-    // Track speaking start
-    const username = this.getClientName(client) || 'Speaker';
-    analyticsService.recordEvent(this.roomCode, {
-      username,
-      eventType: 'speak_start',
-      timestamp: new Date(),
-      priority: this.getClientPriority(client),
-    });
+    // Track speaking start only if this is not a resumed speaker (paused due to deafening)
+    if (key !== this.pausedSpeakerKey) {
+      analyticsService.recordEvent(this.roomCode, {
+        username: name,
+        eventType: 'speak_start',
+        timestamp: new Date(),
+        priority: this.getClientPriority(client),
+      });
+    } else {
+      // Same speaker resuming - adjust their start time to account for pause
+      if (this.speakingPauseStartTime) {
+        const pauseDuration = new Date().getTime() - this.speakingPauseStartTime.getTime();
+        analyticsService.adjustSpeakingStartTime(this.roomCode, name, pauseDuration);
+        this.speakingPauseStartTime = undefined;
+      }
+    }
+    
+    // Clear paused speaker tracking
+    this.pausedSpeakerKey = undefined;
+    this.isListenerDeafened = false;
     
     // Send queue update when speaker changes
     this.sendQueueUpdate();
@@ -212,18 +227,17 @@ export class MessageHandler {
         this.listener.send(JSON.stringify({ type: 'clear' }));
       } catch {}
       this.listener = null;
+      this.isListenerDeafened = true;
 
       if (this.currentCtsKey) {
         const senderWs = this.clientKeyMap[this.currentCtsKey];
         if (senderWs) {
-          // Track speaking end before moving to queue
-          const username = this.getClientName(senderWs) || 'Speaker';
-          analyticsService.recordEvent(this.roomCode, {
-            username,
-            eventType: 'speak_end',
-            timestamp: new Date(),
-            priority: this.getClientPriority(senderWs),
-          });
+          // Don't track speak_end when deafening - we're just pausing, not stopping
+          // Store the paused speaker key so we can resume without counting a new speak
+          this.pausedSpeakerKey = this.currentCtsKey;
+          
+          // Pause speaking time tracking - record when we paused
+          this.speakingPauseStartTime = new Date();
           
           // Instead of removing, place current speaker at top of queue
           // First remove them from their current position
@@ -250,6 +264,7 @@ export class MessageHandler {
 
     const hasPriority = this.sendQueue.hasPriority(ws);
     const senderKey = this.whichClient(ws);
+    const wasInQueue = this.sendQueue.contains(ws);
 
     if (senderKey && (hasPriority || senderKey === this.currentCtsKey)) {
       this.lastSenderKey = undefined;
@@ -274,8 +289,9 @@ export class MessageHandler {
 
     const nextClient = this.sendQueue.removeClient(ws);
     
-    // Track queue leave
-    if (senderKey) {
+    // Track queue leave when student stops themselves (if they were in queue and not current speaker)
+    // This handles the case where they stop and then disconnect
+    if (senderKey && wasInQueue && !hasPriority && senderKey !== this.currentCtsKey) {
       const username = this.getClientName(ws) || 'Speaker';
       analyticsService.recordEvent(this.roomCode, {
         username,
@@ -293,6 +309,7 @@ export class MessageHandler {
   private handleLISTEN = (ws: WebSocket) => {
     try { this.listener?.close(); } catch {}
     this.listener = ws;
+    this.isListenerDeafened = false;
     
     // Also track as instructor connection
     if (ws.readyState === WebSocket.OPEN) {
@@ -303,6 +320,7 @@ export class MessageHandler {
       this.instructorConnections.delete(ws);
       if (this.listener === ws) {
         this.listener = null;
+        this.isListenerDeafened = true; // Mark as deafened when listener disconnects
         if (this.currentCtsKey) {
           const senderWs = this.clientKeyMap[this.currentCtsKey];
           if (senderWs) {
@@ -319,6 +337,16 @@ export class MessageHandler {
 
     const nextClient = this.sendQueue.peekClient?.();
     if (nextClient && this.sendQueue.hasPriority(nextClient)) {
+      // If we were deafened and the same speaker is resuming, adjust their pause time
+      if (this.pausedSpeakerKey && this.speakingPauseStartTime) {
+        const nextKey = this.whichClient(nextClient);
+        if (nextKey === this.pausedSpeakerKey) {
+          const pauseDuration = new Date().getTime() - this.speakingPauseStartTime.getTime();
+          const username = this.getClientName(nextClient) || 'Speaker';
+          analyticsService.adjustSpeakingStartTime(this.roomCode, username, pauseDuration);
+          this.speakingPauseStartTime = undefined;
+        }
+      }
       this.grantCTSWebRTC(nextClient);
       // Send initial queue status
       this.sendQueueUpdate();
@@ -868,13 +896,27 @@ export class MessageHandler {
       client.send(JSON.stringify({ type: 'cts' }));
     } catch {}
     
-    // Track speaking start
-    analyticsService.recordEvent(this.roomCode, {
-      username: name,
-      eventType: 'speak_start',
-      timestamp: new Date(),
-      priority: this.getClientPriority(client),
-    });
+    // Track speaking start only if this is not a resumed speaker (paused due to deafening)
+    // If it's the same speaker that was paused, don't count it as a new speak
+    if (key !== this.pausedSpeakerKey) {
+      analyticsService.recordEvent(this.roomCode, {
+        username: name,
+        eventType: 'speak_start',
+        timestamp: new Date(),
+        priority: this.getClientPriority(client),
+      });
+    } else {
+      // Same speaker resuming - adjust their start time to account for pause
+      if (this.speakingPauseStartTime) {
+        const pauseDuration = new Date().getTime() - this.speakingPauseStartTime.getTime();
+        analyticsService.adjustSpeakingStartTime(this.roomCode, name, pauseDuration);
+        this.speakingPauseStartTime = undefined;
+      }
+    }
+    
+    // Clear paused speaker tracking
+    this.pausedSpeakerKey = undefined;
+    this.isListenerDeafened = false;
     
     // Send queue update when speaker changes
     this.sendQueueUpdate();
@@ -885,9 +927,34 @@ export class MessageHandler {
     if (!k) return;
 
     const wasPriority = this.sendQueue.hasPriority(ws);
+    const wasCurrentSpeaker = this.currentCtsKey === k || this.lastSenderKey === k;
+    const wasInQueue = this.sendQueue.contains(ws);
+    
+    // Track speaking end if they were speaking when they disconnected
+    if (wasCurrentSpeaker) {
+      const username = this.getClientName(ws) || 'Speaker';
+      analyticsService.recordEvent(this.roomCode, {
+        username,
+        eventType: 'speak_end',
+        timestamp: new Date(),
+        priority: this.getClientPriority(ws),
+      });
+    }
+    
+    // Track queue leave only if they were in queue when disconnecting
+    // This handles cases where they disconnect without sending STOP first
+    if (wasInQueue) {
+      const username = this.getClientName(ws) || 'Speaker';
+      analyticsService.recordEvent(this.roomCode, {
+        username,
+        eventType: 'queue_leave',
+        timestamp: new Date(),
+      });
+    }
+    
     this.sendQueue.removeClient(ws);
 
-    if (wasPriority || this.lastSenderKey === k || this.currentCtsKey === k) {
+    if (wasPriority || wasCurrentSpeaker) {
       this.lastSenderKey = undefined;
       this.currentCtsKey = undefined;
       try { 

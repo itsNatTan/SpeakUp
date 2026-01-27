@@ -134,7 +134,7 @@ const QueueManagement: React.FC<Props> = ({
   };
 
   return (
-    <div>
+    <div className="relative">
       {/* Toggle Button */}
       <button
         onClick={onToggle}

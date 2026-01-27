@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { NotFoundError } from '../internal/errors';
 import { analyticsService } from '../services/analytics.service';
+import roomService from '../services/room.service';
 
 const r = new Hono().basePath('/api/v1/analytics');
 
@@ -9,11 +10,13 @@ r.get('/:code/stats', (c) => {
   const roomCode = c.req.param('code');
   const stats = analyticsService.getStats(roomCode);
   const uniqueSpeakers = analyticsService.getUniqueSpeakers(roomCode);
+  const uniqueQueuers = analyticsService.getUniqueQueuers(roomCode);
   const totalSpeakingTime = analyticsService.getTotalSpeakingTime(roomCode);
   
   return c.json({
     roomCode,
     uniqueSpeakers,
+    uniqueQueuers,
     totalSpeakingTime, // in milliseconds
     totalSpeakingTimeMinutes: totalSpeakingTime / 1000 / 60,
     stats,
@@ -25,9 +28,23 @@ r.get('/:code/export', (c) => {
   const roomCode = c.req.param('code');
   const csv = analyticsService.exportToCSV(roomCode);
   
+  // Get room creation time (expiredAt - 1 hour = creation time)
+  const room = roomService.find(roomCode);
+  let creationDate = new Date();
+  if (room && room.expiredAt) {
+    // expiredAt is 1 hour after creation
+    creationDate = new Date(room.expiredAt.getTime() - 60 * 60 * 1000);
+  }
+  
+  // Format as ddmmyyyy
+  const day = String(creationDate.getDate()).padStart(2, '0');
+  const month = String(creationDate.getMonth() + 1).padStart(2, '0');
+  const year = creationDate.getFullYear();
+  const dateStr = `${day}${month}${year}`;
+  
   // Set headers for CSV download
   c.header('Content-Type', 'text/csv');
-  c.header('Content-Disposition', `attachment; filename="analytics-${roomCode}-${Date.now()}.csv"`);
+  c.header('Content-Disposition', `attachment; filename="analytics-${roomCode}-${dateStr}.csv"`);
   
   return c.text(csv);
 });
@@ -37,6 +54,7 @@ r.get('/:code/summary', (c) => {
   const roomCode = c.req.param('code');
   const stats = analyticsService.getStats(roomCode);
   const uniqueSpeakers = analyticsService.getUniqueSpeakers(roomCode);
+  const uniqueQueuers = analyticsService.getUniqueQueuers(roomCode);
   const totalSpeakingTime = analyticsService.getTotalSpeakingTime(roomCode);
   const events = analyticsService.getAllEvents(roomCode);
   
@@ -52,6 +70,7 @@ r.get('/:code/summary', (c) => {
   return c.json({
     roomCode,
     uniqueSpeakers,
+    uniqueQueuers,
     totalSpeaks,
     averageSpeaksPerSpeaker: averageSpeaksPerSpeaker.toFixed(2),
     totalSpeakingTime, // milliseconds
