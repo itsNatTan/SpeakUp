@@ -143,9 +143,17 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   }, []);
 
   const setupPeerConnection = useCallback(() => {
+    const deviceLog = {
+      isiPhone: deviceInfo.isiPhone,
+      isAndroid: deviceInfo.isAndroid,
+      iceTransportPolicy: rtcConfig.iceTransportPolicy,
+      iceServersCount: rtcConfig.iceServers?.length,
+    };
+
     // Don't recreate if we already have a working connection
     if (pcRef.current && pcRef.current.connectionState !== 'closed' && 
         pcRef.current.connectionState !== 'failed') {
+      console.log('[WebRTC] Using existing peer connection', deviceLog);
       return pcRef.current;
     }
 
@@ -157,12 +165,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     const pc = new RTCPeerConnection(rtcConfig);
     pcRef.current = pc;
     
-    console.log('[WebRTC] Created peer connection', {
-      isiPhone: deviceInfo.isiPhone,
-      isAndroid: deviceInfo.isAndroid,
-      iceTransportPolicy: rtcConfig.iceTransportPolicy,
-      iceServersCount: rtcConfig.iceServers?.length,
-    });
+    console.log('[WebRTC] Created peer connection', deviceLog);
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -404,7 +407,11 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   }, [sendSignaling]);
 
   const handleOffer = useCallback(async (offer: RTCSessionDescriptionInit) => {
-    console.log('[WebRTC] Handling offer');
+    console.log('[WebRTC] Handling offer', {
+      isiPhone: deviceInfo.isiPhone,
+      isAndroid: deviceInfo.isAndroid,
+      iceTransportPolicy: rtcConfig.iceTransportPolicy,
+    });
     
     // ALWAYS ensure we have a clean peer connection before handling offers
     // This prevents issues when mobile fails and next speaker's offer arrives
@@ -477,7 +484,10 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         const answer = await pcRef.current.createAnswer();
         await pcRef.current.setLocalDescription(answer);
         sendSignaling({ type: 'answer', sdp: answer });
-        console.log('[WebRTC] Answer created and sent');
+        console.log('[WebRTC] Answer created and sent', {
+          isiPhone: deviceInfo.isiPhone,
+          isAndroid: deviceInfo.isAndroid,
+        });
       } catch (error) {
         console.error('[WebRTC] Error handling offer:', error);
         // If anything fails, reset everything immediately
