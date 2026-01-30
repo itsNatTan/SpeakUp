@@ -1,21 +1,7 @@
 import { Icon } from '@iconify/react';
 import clsx from 'clsx';
 import { useCallback, useState } from 'react';
-
-type QueueUser = {
-  username: string;
-  key: string;
-  priority: number;
-  joinTime: string | Date;
-};
-
-type QueueInfo = {
-  queue: QueueUser[];
-  currentSpeaker: string | null;
-  currentSpeakerPriority?: number;
-  queueSize: number;
-  sortMode?: 'fifo' | 'priority';
-};
+import type { QueueInfo } from '../hooks/useWebRTCAudio';
 
 type Props = {
   queueInfo: QueueInfo;
@@ -26,8 +12,6 @@ type Props = {
   isOpen: boolean;
   onToggle: () => void;
 };
-
-type SortMode = 'fifo' | 'priority';
 
 const QueueManagement: React.FC<Props> = ({
   queueInfo,
@@ -250,15 +234,15 @@ const QueueManagement: React.FC<Props> = ({
                         >
                           {user.username}
                         </span>
-                        {!user.isCurrentSpeaker && user.priority > 0 && (
+                        {!user.isCurrentSpeaker && (user.priority ?? 0) > 0 && (
                           <span
                             className={clsx(
                               'px-1.5 py-0.5 rounded text-xs font-medium border flex-shrink-0',
-                              getPriorityColor(user.priority)
+                              getPriorityColor(user.priority ?? 0)
                             )}
-                            title={`Priority: ${getPriorityLabel(user.priority)}`}
+                            title={`Priority: ${getPriorityLabel(user.priority ?? 0)}`}
                           >
-                            {getPriorityLabel(user.priority)}
+                            {getPriorityLabel(user.priority ?? 0)}
                           </span>
                         )}
                         {user.isCurrentSpeaker && (

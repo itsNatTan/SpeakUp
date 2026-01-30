@@ -7,15 +7,19 @@ type SignalingMessage =
   | { type: 'ready' }
   | { type: 'error'; error: string };
 
-type QueueUser = {
+export type QueueUser = {
   username: string;
   key: string;
+  priority?: number;
+  joinTime?: string | number | Date;
 };
 
-type QueueInfo = {
+export type QueueInfo = {
   queue: QueueUser[];
   currentSpeaker: string | null;
   queueSize: number;
+  currentSpeakerPriority?: number;
+  sortMode?: 'fifo' | 'priority';
 };
 
 export const useWebRTCAudio = (wsEndpoint: string) => {
@@ -35,8 +39,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const currentStreamRef = useRef<MediaStream | null>(null);
 
   // Detect device types for specific handling (used throughout the hook)
+  // iOS Safari with "Request Desktop Website" reports Mac-like UA (no "iPhone") - use platform + touch as fallback
+  const isIPhoneUA = /iPhone/i.test(navigator.userAgent);
+  const isIOSDesktopMode =
+    navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
   const deviceInfo = {
-    isiPhone: /iPhone/i.test(navigator.userAgent),
+    isiPhone: isIPhoneUA || isIOSDesktopMode,
     isAndroid: /Android/i.test(navigator.userAgent),
     isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
   };
