@@ -425,37 +425,41 @@ export const useWebRTCStreaming = (
   /** Detect when WebRTC isn't transmitting audio (muted mic, iPhone failure) or never connects (no listener) and fall back to MediaRecorder. */
   useEffect(() => {
     if (state !== 'on' || fallbackModeRef.current) return;
-    const POLL_MS = 1500;
-    const LOW_BYTES_THRESHOLD = 1500; // bytes per 1.5s — muted sends ~100-500, speech sends 6KB+
-    const POLLS_BEFORE_FALLBACK = 3; // ~4.5s of low bytes when connected
-    const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 2; // ~12s never connected (give WebRTC time when listener connects)
+    const POLL_MS = 1000; // 1s — low for testing
+    const LOW_BYTES_THRESHOLD = 2200; // bytes per 1s — muted ~1.7KB, speech ~3.3KB
+    const POLLS_BEFORE_FALLBACK = 2; // ~2s low bytes when connected
+    const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 3; // ~3s never connected (low for testing)
     lastBytesSentRef.current = 0;
     let notConnectedCount = 0;
     const iv = setInterval(async () => {
       if (fallbackModeRef.current) return;
-      if (!pcRef.current || !streamRef.current) return;
+      if (!pcRef.current || !streamRef.current) {
+        return;
+      }
       try {
         const connState = pcRef.current.connectionState;
         const iceState = pcRef.current.iceConnectionState;
         if (connState === 'failed' || iceState === 'failed') {
+          console.warn('[WebRTC Streaming] Connection/ICE failed — MediaRecorder fallback');
           fallbackToMediaRecorder();
           return;
         }
         if (connState !== 'connected' || iceState !== 'connected') {
           notConnectedCount++;
           if (notConnectedCount >= POLLS_BEFORE_FALLBACK_NOT_CONNECTED) {
-            console.warn('[WebRTC Streaming] WebRTC never connected after', notConnectedCount * POLL_MS / 1000, 's — MediaRecorder fallback');
+            console.warn('[WebRTC Streaming] Not connected after', notConnectedCount * POLL_MS / 1000, 's — MediaRecorder fallback');
             fallbackToMediaRecorder();
           }
           return;
         }
         notConnectedCount = 0;
 
-        // Direct muted detection: track.enabled=false (app mute) or track.muted (system/hardware mute)
+        // Direct muted detection: track.enabled=false or track.muted
         const audioTracks = streamRef.current.getAudioTracks();
+        const trackInfo = audioTracks.map(t => ({ enabled: t.enabled, muted: t.muted }));
         const anyMuted = audioTracks.some(t => !t.enabled || t.muted);
         if (anyMuted) {
-          console.warn('[WebRTC Streaming] Mic muted — MediaRecorder fallback');
+          console.warn('[WebRTC Streaming] Mic muted (track)', trackInfo, '— MediaRecorder fallback');
           fallbackToMediaRecorder();
           return;
         }
@@ -473,7 +477,7 @@ export const useWebRTCStreaming = (
           }
         });
         if (anyInactive) {
-          console.warn('[WebRTC Streaming] Outbound RTP inactive — MediaRecorder fallback');
+          console.warn('[WebRTC Streaming] RTP inactive (stats.active=false) — MediaRecorder fallback');
           fallbackToMediaRecorder();
           return;
         }
@@ -486,7 +490,7 @@ export const useWebRTCStreaming = (
         } else {
           lowBytesSentCountRef.current++;
           if (lowBytesSentCountRef.current >= POLLS_BEFORE_FALLBACK) {
-            console.warn('[WebRTC Streaming] No audio transmitted for', POLLS_BEFORE_FALLBACK * POLL_MS / 1000, 's (delta=', delta, 'bytes) — MediaRecorder fallback');
+            console.warn('[WebRTC Streaming] Low bytes for', POLLS_BEFORE_FALLBACK * POLL_MS / 1000, 's (delta=', delta, ') — MediaRecorder fallback');
             fallbackToMediaRecorder();
           }
         }
