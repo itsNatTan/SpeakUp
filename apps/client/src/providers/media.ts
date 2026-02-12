@@ -124,8 +124,7 @@ export class MediaProvider {
     if (!this.mediaSource || this.mediaSource.readyState !== 'open') {
       await this.sourceOpenPromise;
     }
-    if (this.destroyed) return;
-    if (!this.mediaSource || this.mediaSource.readyState !== 'open' || !this.sourceBuffer || this.sourceBuffer.updating) return;
+    if (!this.sourceBuffer || this.sourceBuffer.updating) return;
     if (!this.queue.length) {
       // try to (re)start playback once there is enough buffered data
       this.maybeStartPlayback();
@@ -134,13 +133,13 @@ export class MediaProvider {
 
     // Guard: if audio element errored, rebuild cleanly
     if (this.attachingEl?.error || this.mediaSource?.readyState === 'ended') {
+      // console.warn('Audio element/MS errored/ended; rebuilding pipeline.');
       await this.rebuild();
       return;
     }
 
     try {
       const chunk = this.queue.shift()!;
-      if (!this.sourceBuffer || !this.mediaSource || this.mediaSource.readyState !== 'open') return;
       this.sourceBuffer.appendBuffer(chunk);
       this.pendingRetry = false; // successful append clears quota retry guard
     } catch (e: any) {
@@ -237,19 +236,17 @@ export class MediaProvider {
     this.mediaSource = new MediaSource();
     this.sourceOpenPromise = new Promise<void>((res) => (this.sourceOpenResolve = res));
     this.mediaSource.addEventListener('sourceopen', () => {
-      if (this.destroyed || !this.mediaSource || this.mediaSource.readyState !== 'open') return;
       try {
         this.sourceBuffer = this.mimeType
           ? this.mediaSource!.addSourceBuffer(this.mimeType)
           : this.mediaSource!.addSourceBuffer('audio/mp4');
       } catch (e) {
-        if (this.destroyed) return;
         try {
           const alt = this.mimeType?.includes('mp4') ? 'audio/webm; codecs="opus"' : 'audio/mp4; codecs="mp4a.40.2"';
           this.sourceBuffer = this.mediaSource!.addSourceBuffer(alt);
           this.mimeType = alt;
         } catch (e2) {
-          if (!this.destroyed) console.error('addSourceBuffer failed after rebuild', e2);
+          console.error('addSourceBuffer failed after rebuild', e2);
           return;
         }
       }

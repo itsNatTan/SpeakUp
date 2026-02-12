@@ -563,6 +563,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     isOpenRef.current = false;
 
     const ws = new WebSocket(wsEndpoint);
+    ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -589,12 +590,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           const ab = event.data instanceof ArrayBuffer
             ? event.data
             : await (event.data as Blob).arrayBuffer();
-          providerRef.current.buffer(ab).catch((e) => {
-            console.warn('[WebRTC] Buffer failed (provider may be torn down), will recreate on next chunk:', e?.message);
-            providerRef.current?.dispose();
-            providerRef.current = null;
-            fallbackModeRef.current = false;
-          });
+          providerRef.current.buffer(ab).catch(() => {});
         }
         return;
       }
@@ -634,8 +630,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
             fallbackTimerRef.current = null;
           }
           fallbackModeRef.current = false;
-          providerRef.current?.dispose();
-          providerRef.current = null;
+          providerRef.current?.reinitialize();
           // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;
@@ -675,8 +670,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
             fallbackTimerRef.current = null;
           }
           fallbackModeRef.current = false;
-          providerRef.current?.dispose();
-          providerRef.current = null;
+          providerRef.current?.reinitialize();
           // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;

@@ -893,7 +893,11 @@ export class MessageHandler {
     try {
       this.listener.send(JSON.stringify({ type: 'clear' }));
       this.listener.send(JSON.stringify({ type: 'from', name }));
-      client.send(JSON.stringify({ type: 'cts' }));
+      // Include recMime so speaker can use it if falling back to MediaRecorder (e.g. iPhone WebRTC failure)
+      client.send(JSON.stringify({
+        type: 'cts',
+        recMime: this.preferredPlaybackMime ?? undefined,
+      }));
     } catch {}
     
     // Track speaking start only if this is not a resumed speaker (paused due to deafening)
