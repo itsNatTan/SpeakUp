@@ -1,4 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { MediaProvider } from '../providers/media';
+
+function pickPlaybackMime(): string | undefined {
+  const MS = (window as any).MediaSource;
+  if (!MS || typeof MS.isTypeSupported !== 'function') return undefined;
+  const mp4 = ['audio/mp4; codecs="mp4a.40.2"', 'audio/mp4'];
+  const webm = ['audio/webm; codecs="opus"', 'audio/webm'];
+  const ua = navigator.userAgent || '';
+  const safari = /iPad|iPhone|iPod/.test(ua) || (/Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR/.test(ua));
+  const primary = safari ? mp4 : webm;
+  const secondary = safari ? webm : mp4;
+  for (const t of primary) if (MS.isTypeSupported(t)) return t;
+  for (const t of secondary) if (MS.isTypeSupported(t)) return t;
+  return undefined;
+}
 
 type SignalingMessage = 
   | { type: 'offer'; sdp: RTCSessionDescriptionInit }
@@ -37,6 +52,10 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const isOpenRef = useRef(false);
   const audioSetupRef = useRef(false);
   const currentStreamRef = useRef<MediaStream | null>(null);
+  const providerRef = useRef<MediaProvider | null>(null);
+  const fallbackModeRef = useRef(false);
+  const gotTrackForSpeakerRef = useRef(false);
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Detect device types for specific handling (used throughout the hook)
   // iOS Safari with "Request Desktop Website" reports Mac-like UA (no "iPhone") - use platform + touch as fallback
@@ -112,7 +131,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       ] : []),
     ],
     iceCandidatePoolSize: deviceInfo.isiPhone || deviceInfo.isAndroid ? 0 : 10, // Don't pre-gather on problematic devices
-    iceTransportPolicy: deviceInfo.isiPhone ? 'relay' : 'all', // iPhone: force relay to avoid iOS 15+ bugs
+    // iPhone: force relay (iOS WebRTC bugs). Android 5G: force relay (CGNAT blocks UDP).
+    iceTransportPolicy: deviceInfo.isiPhone || deviceInfo.isAndroid ? 'relay' : 'all',
   };
 
   // Audio codec preferences - Android Chrome needs specific codec order
@@ -140,6 +160,24 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
     }
+  }, []);
+
+  /** Switch to WebSocket binary mode when WebRTC fails to deliver audio (e.g. iPhone speaker). */
+  const switchToBinaryMode = useCallback(() => {
+    if (fallbackModeRef.current) return;
+    const el = audioRef.current;
+    if (!el) return;
+    fallbackModeRef.current = true;
+    el.srcObject = null;
+    el.pause();
+    if (!providerRef.current) {
+      const fmt = pickPlaybackMime();
+      providerRef.current = new MediaProvider(fmt);
+      providerRef.current.attach(el);
+    } else {
+      providerRef.current.reinitialize();
+    }
+    console.log('[WebRTC] Switched to binary/MediaRecorder fallback (WebRTC not receiving audio)');
   }, []);
 
   const setupPeerConnection = useCallback(() => {
@@ -174,6 +212,11 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     };
 
     pc.ontrack = (event) => {
+      gotTrackForSpeakerRef.current = true;
+      if (fallbackTimerRef.current) {
+        clearTimeout(fallbackTimerRef.current);
+        fallbackTimerRef.current = null;
+      }
       if (audioRef.current && event.streams[0]) {
         const audioElement = audioRef.current;
         const stream = event.streams[0];
@@ -540,6 +583,21 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     };
 
     ws.onmessage = async (event) => {
+      if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+        if (!fallbackModeRef.current) switchToBinaryMode();
+        if (providerRef.current) {
+          const ab = event.data instanceof ArrayBuffer
+            ? event.data
+            : await (event.data as Blob).arrayBuffer();
+          providerRef.current.buffer(ab).catch((e) => {
+            console.warn('[WebRTC] Buffer failed (provider may be torn down), will recreate on next chunk:', e?.message);
+            providerRef.current?.dispose();
+            providerRef.current = null;
+            fallbackModeRef.current = false;
+          });
+        }
+        return;
+      }
       try {
         const data = JSON.parse(event.data);
         
@@ -554,6 +612,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
         } else if (data.type === 'from') {
           setPlaying(data.name || 'Speaker');
+          gotTrackForSpeakerRef.current = false;
+          if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+          fallbackTimerRef.current = setTimeout(() => {
+            if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
+            fallbackTimerRef.current = null;
+          }, 5000);
         } else if (data.type === 'queue-update' || data.type === 'queue-status') {
           setQueueInfo({
             queue: data.queue || [],
@@ -565,6 +629,13 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         } else if (data.type === 'clear') {
           console.log('[WebRTC] Received clear message - resetting audio pipeline');
           setPlaying(null);
+          if (fallbackTimerRef.current) {
+            clearTimeout(fallbackTimerRef.current);
+            fallbackTimerRef.current = null;
+          }
+          fallbackModeRef.current = false;
+          providerRef.current?.dispose();
+          providerRef.current = null;
           // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;
@@ -599,6 +670,13 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         if (message === 'CLEAR' || message === 'STOP') {
           console.log('[WebRTC] Received clear/stop message:', message);
           setPlaying(null);
+          if (fallbackTimerRef.current) {
+            clearTimeout(fallbackTimerRef.current);
+            fallbackTimerRef.current = null;
+          }
+          fallbackModeRef.current = false;
+          providerRef.current?.dispose();
+          providerRef.current = null;
           // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;
@@ -626,6 +704,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           }
         } else if (message.startsWith('FROM')) {
           setPlaying(message.slice(4));
+          gotTrackForSpeakerRef.current = false;
+          if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+          fallbackTimerRef.current = setTimeout(() => {
+            if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
+            fallbackTimerRef.current = null;
+          }, 5000);
         } else {
           // Log unexpected messages for debugging
           console.log('[WebRTC] Received unexpected message:', message.substring(0, 100));
@@ -645,7 +729,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     };
 
     ws.onerror = () => {};
-  }, [wsEndpoint, handleOffer]);
+  }, [wsEndpoint, handleOffer, switchToBinaryMode]);
 
   const requestQueueStatus = useCallback(() => {
     const ws = wsRef.current;
@@ -716,6 +800,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       const ws = wsRef.current;
       if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
         ws.send('LISTEN');
+        const fmt = pickPlaybackMime();
+        if (fmt) ws.send(`FORMAT ${fmt}`);
         
         // Ensure peer connection exists (should already be created in onopen)
         if (!pcRef.current) {
@@ -802,6 +888,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
 
   useEffect(() => {
     return () => {
+      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+      providerRef.current?.dispose();
+      providerRef.current = null;
       try {
         wsRef.current?.close();
       } catch {}

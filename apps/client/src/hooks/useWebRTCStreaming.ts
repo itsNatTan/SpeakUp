@@ -1,5 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+/** Pick MediaRecorder mime for WebRTC→MediaRecorder fallback (e.g. iPhone). */
+function pickRecorderMime(serverHint?: string): string | undefined {
+  const MR = (window as any).MediaRecorder;
+  if (!MR || typeof MR.isTypeSupported !== 'function') return undefined;
+  if (serverHint && MR.isTypeSupported(serverHint)) return serverHint;
+  const mp4 = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4'];
+  const webm = ['audio/webm;codecs=opus', 'audio/webm'];
+  const ua = navigator.userAgent || '';
+  const safari = /iPad|iPhone|iPod/.test(ua) || (/Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR/.test(ua));
+  const primary = safari ? mp4 : webm;
+  const secondary = safari ? webm : mp4;
+  for (const t of primary) if (MR.isTypeSupported(t)) return t;
+  for (const t of secondary) if (MR.isTypeSupported(t)) return t;
+  return undefined;
+}
+
 export type AudioConfig = {
   echoCancellation: boolean;
   noiseSuppression: boolean;
@@ -29,11 +45,20 @@ export const useWebRTCStreaming = (
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  /** Stream acquired on user gesture (required for iPhone Safari). */
+  const streamFromUserGestureRef = useRef<MediaStream | null>(null);
 
   const isOpenRef = useRef(false);
   const wantSpeakRef = useRef(false);
   const pendingOfferRef = useRef(false);
   const priorityRef = useRef(priority);
+  /** Server hint for MediaRecorder format when falling back from WebRTC (e.g. iPhone). */
+  const recMimeRef = useRef<string | undefined>(undefined);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const fallbackModeRef = useRef(false);
+  /** Consecutive polls where bytesSent was below threshold (muted/failed mic or broken WebRTC). */
+  const lowBytesSentCountRef = useRef(0);
+  const lastBytesSentRef = useRef(0);
   
   // Update priority ref when it changes
   useEffect(() => {
@@ -106,15 +131,28 @@ export const useWebRTCStreaming = (
       ] : []),
     ],
     iceCandidatePoolSize: isiPhone || isAndroid ? 0 : 10, // Don't pre-gather on problematic devices
-    iceTransportPolicy: isiPhone ? 'relay' : 'all', // iPhone: force relay to avoid iOS 15+ bugs
+    // iPhone: force relay (iOS WebRTC bugs). Android 5G: force relay (CGNAT blocks UDP).
+    iceTransportPolicy: isiPhone || isAndroid ? 'relay' : 'all',
   };
 
   const cleanup = useCallback(() => {
+    // Stop MediaRecorder fallback if active
+    if (mediaRecorderRef.current?.state === 'recording') {
+      try { (mediaRecorderRef.current as any).requestData?.(); } catch {}
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    fallbackModeRef.current = false;
+    lowBytesSentCountRef.current = 0;
+    lastBytesSentRef.current = 0;
+
     pcRef.current?.close();
     pcRef.current = null;
 
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
+    streamFromUserGestureRef.current?.getTracks().forEach(t => t.stop());
+    streamFromUserGestureRef.current = null;
 
     pendingOfferRef.current = false;
   }, []);
@@ -123,6 +161,30 @@ export const useWebRTCStreaming = (
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
     }
+  }, []);
+
+  /** Fallback to MediaRecorder when WebRTC fails (e.g. iPhone, no audio transmitted). */
+  const fallbackToMediaRecorder = useCallback(() => {
+    if (fallbackModeRef.current || !streamRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const stream = streamRef.current;
+    const mime = pickRecorderMime(recMimeRef.current);
+    let recorder: MediaRecorder;
+    try {
+      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    } catch {
+      recorder = new MediaRecorder(stream);
+    }
+    recorder.ondataavailable = (e: BlobEvent) => {
+      if (e.data?.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(e.data);
+      }
+    };
+    recorder.start(500);
+    mediaRecorderRef.current = recorder;
+    fallbackModeRef.current = true;
+    console.log('[WebRTC Streaming] Fallback to MediaRecorder (WebRTC not transmitting audio)', { mime });
   }, []);
 
   const createOffer = useCallback(async () => {
@@ -136,22 +198,25 @@ export const useWebRTCStreaming = (
     console.log('[WebRTC Streaming] Creating offer', { isAndroid, isMobile, userAgent: navigator.userAgent });
 
     try {
-      // Android-specific audio constraints - Android Chrome has different requirements
-      const audioConstraints: MediaTrackConstraints = {
-        echoCancellation: audioConfig?.echoCancellation ?? true,
-        noiseSuppression: audioConfig?.noiseSuppression ?? true,
-        autoGainControl: audioConfig?.autoGainControl ?? true,
-      };
-      
-      // Mobile devices (especially Android) often work better with minimal constraints
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: isMobile ? {
-          // Mobile: Use simpler constraints (often works better without processing)
-          echoCancellation: audioConfig?.echoCancellation ?? false,
-          noiseSuppression: audioConfig?.noiseSuppression ?? false,
-          autoGainControl: audioConfig?.autoGainControl ?? false,
-        } : audioConstraints,
-      });
+      // Prefer stream acquired on user gesture (required for iPhone Safari — mic + audio must be tied to tap).
+      let stream: MediaStream | null = streamFromUserGestureRef.current;
+      streamFromUserGestureRef.current = null;
+
+      if (!stream) {
+        // Desktop/fallback: get mic here. No sampleRate/channelCount — let browser choose (iPhone-safe).
+        const audioConstraints: MediaTrackConstraints = {
+          echoCancellation: audioConfig?.echoCancellation ?? true,
+          noiseSuppression: audioConfig?.noiseSuppression ?? true,
+          autoGainControl: audioConfig?.autoGainControl ?? true,
+        };
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: isMobile ? {
+            echoCancellation: audioConfig?.echoCancellation ?? true,
+            noiseSuppression: audioConfig?.noiseSuppression ?? true,
+            autoGainControl: audioConfig?.autoGainControl ?? true,
+          } : audioConstraints,
+        });
+      }
 
       console.log('[WebRTC Streaming] Got user media stream', {
         tracks: stream.getAudioTracks().length,
@@ -256,6 +321,7 @@ export const useWebRTCStreaming = (
         }
 
         if (data.type === 'cts') {
+          recMimeRef.current = data.recMime;
           setState('on');
 
           if (!pcRef.current) {
@@ -271,19 +337,24 @@ export const useWebRTCStreaming = (
             };
 
             pcRef.current.onconnectionstatechange = () => {
-              const state = pcRef.current?.connectionState;
-              console.log('[WebRTC Streaming] Connection state:', state);
+              const connState = pcRef.current?.connectionState;
+              console.log('[WebRTC Streaming] Connection state:', connState);
               
-              if (state === 'failed' || state === 'disconnected') {
-                console.error('[WebRTC Streaming] Connection failed or disconnected');
-                cleanup();
-                setState('off');
+              if (connState === 'failed') {
+                console.warn('[WebRTC Streaming] Connection failed — trying MediaRecorder fallback');
+                fallbackToMediaRecorder();
+              } else if (connState === 'disconnected') {
+                console.log('[WebRTC Streaming] Disconnected, will monitor');
               }
             };
             
-            // Log ICE connection state for debugging
             pcRef.current.oniceconnectionstatechange = () => {
-              console.log('[WebRTC Streaming] ICE connection state:', pcRef.current?.iceConnectionState);
+              const iceState = pcRef.current?.iceConnectionState;
+              console.log('[WebRTC Streaming] ICE connection state:', iceState);
+              if (iceState === 'failed') {
+                console.warn('[WebRTC Streaming] ICE failed — trying MediaRecorder fallback');
+                fallbackToMediaRecorder();
+              }
             };
             
             // Log ICE gathering state
@@ -336,7 +407,7 @@ export const useWebRTCStreaming = (
         }
       }
     };
-  }, [cleanup, createOffer, send, username, wsEndpoint]);
+  }, [cleanup, createOffer, fallbackToMediaRecorder, send, username, wsEndpoint]);
 
   useEffect(() => {
     openSocket();
@@ -350,11 +421,79 @@ export const useWebRTCStreaming = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsEndpoint]);
 
-  const beginStream = useCallback(() => {
+  /** Detect when WebRTC isn't transmitting audio (e.g. iPhone, muted mic) or never connects (no listener) and fall back to MediaRecorder. */
+  useEffect(() => {
+    if (state !== 'on' || fallbackModeRef.current) return;
+    const POLL_MS = 1500;
+    const LOW_BYTES_THRESHOLD = 200; // bytes per 1.5s — below this = no real audio (muted/broken)
+    const POLLS_BEFORE_FALLBACK = 3; // ~4.5s of low bytes when connected
+    const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 4; // ~6s never connected = fallback (no listener / ICE stuck)
+    const GRACE_POLLS_AFTER_CONNECT = 2; // Don't check bytes until 2 polls (~3s) after connect — media path warm-up
+    lastBytesSentRef.current = 0;
+    let notConnectedCount = 0;
+    let connectedPollCount = 0;
+    const iv = setInterval(async () => {
+      if (fallbackModeRef.current) return;
+      if (!pcRef.current || !streamRef.current) return;
+      try {
+        const connState = pcRef.current.connectionState;
+        const iceState = pcRef.current.iceConnectionState;
+        if (connState === 'failed' || iceState === 'failed') {
+          console.warn('[WebRTC Streaming] Connection/ICE failed — MediaRecorder fallback');
+          fallbackToMediaRecorder();
+          return;
+        }
+        const isConnected = connState === 'connected' && (iceState === 'connected' || iceState === 'completed');
+        if (!isConnected) {
+          notConnectedCount++;
+          if (notConnectedCount >= POLLS_BEFORE_FALLBACK_NOT_CONNECTED) {
+            console.warn('[WebRTC Streaming] WebRTC never connected after', notConnectedCount * POLL_MS / 1000, 's (no listener or ICE stuck) — MediaRecorder fallback');
+            fallbackToMediaRecorder();
+          }
+          return;
+        }
+        notConnectedCount = 0;
+        connectedPollCount++;
+
+        let bytesSent = 0;
+        const stats = await pcRef.current.getStats();
+        stats.forEach((s) => {
+          const stat = s as any;
+          if (s.type === 'outbound-rtp' && (stat.bytesSent != null || stat.bytes_sent != null)) {
+            bytesSent += stat.bytesSent ?? stat.bytes_sent ?? 0;
+          }
+        });
+        const delta = bytesSent - lastBytesSentRef.current;
+        lastBytesSentRef.current = bytesSent;
+
+        // Grace period: don't count low bytes until we've been connected for a few polls (media warm-up)
+        if (connectedPollCount < GRACE_POLLS_AFTER_CONNECT) return;
+
+        if (delta >= LOW_BYTES_THRESHOLD) {
+          lowBytesSentCountRef.current = 0;
+        } else {
+          lowBytesSentCountRef.current++;
+          if (lowBytesSentCountRef.current >= POLLS_BEFORE_FALLBACK) {
+            console.warn('[WebRTC Streaming] No audio transmitted for', POLLS_BEFORE_FALLBACK * POLL_MS / 1000, 's (delta=', delta, 'bytes) — MediaRecorder fallback');
+            fallbackToMediaRecorder();
+          }
+        }
+      } catch (e) {
+        console.warn('[WebRTC Streaming] getStats failed:', e);
+      }
+    }, POLL_MS);
+    return () => clearInterval(iv);
+  }, [state, fallbackToMediaRecorder]);
+
+  /** Call with a stream acquired on user gesture (required for iPhone). If omitted, mic is requested when CTS arrives (desktop). */
+  const beginStream = useCallback((streamFromUserGesture?: MediaStream) => {
+    if (streamFromUserGesture) {
+      streamFromUserGestureRef.current = streamFromUserGesture;
+    }
     wantSpeakRef.current = true;
     setState('waiting');
-    send({ type: 'ready', username, priority });
-  }, [send, username, priority]);
+    send({ type: 'ready', username, priority: priorityRef.current });
+  }, [send, username]);
 
   // Update priority while in queue (skip initial mount)
   const isInitialMount = useRef(true);
