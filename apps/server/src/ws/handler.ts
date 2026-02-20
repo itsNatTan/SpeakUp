@@ -30,6 +30,7 @@ export class MessageHandler {
 
   // NEW: listener’s preferred playback container/codec (from “FORMAT …”)
   private preferredPlaybackMime: string | undefined;
+  private defaultAudioMode: 'webrtc' | 'mediarecorder' = 'webrtc';
 
   constructor(
     private readonly roomCode: string,
@@ -77,6 +78,14 @@ export class MessageHandler {
     if (message.startsWith('FORMAT ')) {
       const fmt = message.slice('FORMAT '.length).trim();
       this.preferredPlaybackMime = fmt;
+      return () => {}; // no-op handler
+    }
+    // Listener sets default audio mode for new speakers
+    if (message.startsWith('DEFAULT_MODE ')) {
+      const mode = message.slice('DEFAULT_MODE '.length).trim().toLowerCase();
+      if (mode === 'mediarecorder' || mode === 'webrtc') {
+        this.defaultAudioMode = mode;
+      }
       return () => {}; // no-op handler
     }
 
@@ -813,6 +822,28 @@ export class MessageHandler {
       return;
     }
 
+    if (signal.type === 'force-fallback') {
+      if (ws === this.listener && this.listener?.readyState === WebSocket.OPEN && this.currentCtsKey) {
+        const speakerWs = this.clientKeyMap[this.currentCtsKey];
+        if (speakerWs?.readyState === WebSocket.OPEN) {
+          try { speakerWs.send(JSON.stringify({ type: 'force-fallback' })); } catch {}
+        }
+      }
+      return;
+    }
+    if (signal.type === 'force-webrtc') {
+      if (ws === this.listener && this.listener?.readyState === WebSocket.OPEN) {
+        if (this.currentCtsKey) {
+          const speakerWs = this.clientKeyMap[this.currentCtsKey];
+          if (speakerWs?.readyState === WebSocket.OPEN) {
+            try { speakerWs.send(JSON.stringify({ type: 'force-webrtc' })); } catch {}
+          }
+        }
+        try { this.listener.send(JSON.stringify({ type: 'force-webrtc' })); } catch {}
+      }
+      return;
+    }
+
     if (signal.type === 'offer') {
       // Student sent an offer, forward to listener
       const senderKey = this.whichClient(ws);
@@ -893,10 +924,10 @@ export class MessageHandler {
     try {
       this.listener.send(JSON.stringify({ type: 'clear' }));
       this.listener.send(JSON.stringify({ type: 'from', name }));
-      // Include recMime so speaker can use it if falling back to MediaRecorder (e.g. iPhone WebRTC failure)
       client.send(JSON.stringify({
         type: 'cts',
         recMime: this.preferredPlaybackMime ?? undefined,
+        defaultMode: this.defaultAudioMode,
       }));
     } catch {}
     

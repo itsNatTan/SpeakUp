@@ -6,6 +6,7 @@ import clsx from 'clsx';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Analytics from '../components/Analytics';
+import DefaultModeModal from '../components/DefaultModeModal';
 import QueueManagement from '../components/QueueManagement';
 import RoomInfo from '../components/RoomInfo';
 import { useWebRTCAudio } from '../hooks/useWebRTCAudio';
@@ -29,18 +30,30 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     reorderUser,
     moveUserToPosition,
     setQueueSortMode,
+    forceMediaRecorderFallback,
+    forceWebRTC,
+    setDefaultAudioMode,
+    audioMode,
   } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
   
   const [queueOpen, setQueueOpen] = useState(false);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [defaultModeOpen, setDefaultModeOpen] = useState(false);
+  const [defaultMode, setDefaultMode] = useState<'webrtc' | 'mediarecorder'>('webrtc');
+
+  const handleDefaultModeChange = useCallback((mode: 'webrtc' | 'mediarecorder') => {
+    setDefaultMode(mode);
+    setDefaultAudioMode(mode);
+  }, [setDefaultAudioMode]);
 
   const handleClick = useCallback(() => {
     if (listening) {
       stopListening();
     } else {
+      setDefaultAudioMode(defaultMode);
       listen();
     }
-  }, [listen, listening, stopListening]);
+  }, [listen, listening, stopListening, setDefaultAudioMode, defaultMode]);
 
   const navigate = useNavigate();
   const [timeRemaining, setTimeRemaining] = useState(
@@ -105,13 +118,14 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
 
         <p>{listening ? <>Tuning in&hellip;</> : 'Everyone is muted'}</p>
 
-        {/* NEW: Skip Speaker button */}
+        {/* Skip Speaker button */}
         <button
+          type="button"
           className={clsx(
-            'px-4 py-2 rounded-lg font-semibold transition-colors',
+            'px-5 py-2.5 rounded-lg font-semibold transition-all duration-200 shadow-sm border',
             listening && !cooldown
-              ? 'bg-amber-500 hover:bg-amber-600 text-white'
-              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-600'
+              : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
           )}
           disabled={!listening || cooldown}
           onClick={handleSkip}
@@ -124,6 +138,48 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
             <span>Skip speaker (S)</span>
           </div>
         </button>
+        {/* Switch current speaker: MediaRecorder / WebRTC */}
+        {listening && playing && (
+          <div className="flex flex-col gap-1.5 items-center">
+            <span className="text-sm text-gray-500">Switch current speaker:</span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={clsx(
+                  'px-3 py-1.5 rounded-md text-sm font-medium transition-colors border',
+                  audioMode === 'webrtc'
+                    ? 'bg-slate-500 hover:bg-slate-600 text-white border-slate-600'
+                    : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                )}
+                disabled={audioMode === 'mediarecorder'}
+                onClick={forceMediaRecorderFallback}
+                title={audioMode === 'webrtc' ? 'Force MediaRecorder' : 'Already using MediaRecorder'}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Icon icon="tabler:record" className="w-4 h-4" />
+                  MediaRecorder
+                </span>
+              </button>
+              <button
+                type="button"
+                className={clsx(
+                  'px-3 py-1.5 rounded-md text-sm font-medium transition-colors border',
+                  audioMode === 'mediarecorder'
+                    ? 'bg-blue-500 hover:bg-blue-600 text-white border-blue-600'
+                    : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                )}
+                disabled={audioMode === 'webrtc'}
+                onClick={forceWebRTC}
+                title={audioMode === 'mediarecorder' ? 'Switch to WebRTC' : 'Already using WebRTC'}
+              >
+                <span className="flex items-center gap-1.5">
+                  <Icon icon="tabler:antenna" className="w-4 h-4" />
+                  WebRTC
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Hint who we're hearing */}
@@ -131,17 +187,14 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
 
       <audio ref={ref} preload="auto" />
       <button
-        className={clsx(
-          'px-4 py-2 bg-red-500 text-white',
-          'font-semibold',
-          'hover:bg-red-600 rounded-lg',
-        )}
+        type="button"
+        className="px-5 py-2.5 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg transition-all duration-200 shadow-sm border border-red-600"
         onClick={() => navigate('/')}
       >
         Leave
       </button>
 
-      {/* Queue Management and Analytics Buttons - Stacked */}
+      {/* Queue Management, Analytics, and Settings - Stacked */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-3">
         <QueueManagement
           queueInfo={queueInfo}
@@ -156,6 +209,12 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
           roomCode={roomCode}
           isOpen={analyticsOpen}
           onToggle={() => setAnalyticsOpen(!analyticsOpen)}
+        />
+        <DefaultModeModal
+          defaultMode={defaultMode}
+          onDefaultModeChange={handleDefaultModeChange}
+          isOpen={defaultModeOpen}
+          onToggle={() => setDefaultModeOpen(!defaultModeOpen)}
         />
       </div>
     </div>

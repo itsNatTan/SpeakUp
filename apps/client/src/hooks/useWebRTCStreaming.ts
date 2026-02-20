@@ -163,12 +163,8 @@ export const useWebRTCStreaming = (
     }
   }, []);
 
-  /** Fallback to MediaRecorder when WebRTC fails (e.g. iPhone, no audio transmitted). */
-  const fallbackToMediaRecorder = useCallback(() => {
-    if (fallbackModeRef.current || !streamRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    const stream = streamRef.current;
+  const startMediaRecorder = useCallback((stream: MediaStream) => {
+    if (fallbackModeRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     const mime = pickRecorderMime(recMimeRef.current);
     let recorder: MediaRecorder;
     try {
@@ -177,15 +173,60 @@ export const useWebRTCStreaming = (
       recorder = new MediaRecorder(stream);
     }
     recorder.ondataavailable = (e: BlobEvent) => {
-      if (e.data?.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(e.data);
-      }
+      if (e.data?.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(e.data);
     };
     recorder.start(500);
     mediaRecorderRef.current = recorder;
     fallbackModeRef.current = true;
-    console.log('[WebRTC Streaming] Fallback to MediaRecorder (WebRTC not transmitting audio)', { mime });
   }, []);
+
+  const fallbackToMediaRecorder = useCallback(() => {
+    if (fallbackModeRef.current || !streamRef.current) return;
+    startMediaRecorder(streamRef.current);
+    console.log('[WebRTC Streaming] Switched to MediaRecorder');
+  }, [startMediaRecorder]);
+
+  const stopMediaRecorderAndUseWebRTC = useCallback(async () => {
+    if (!fallbackModeRef.current) return;
+    if (mediaRecorderRef.current?.state === 'recording') {
+      try { (mediaRecorderRef.current as any).requestData?.(); } catch {}
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    fallbackModeRef.current = false;
+    if (!streamRef.current) return;
+    const stream = streamRef.current;
+    const hadWebRTC = pcRef.current?.getSenders().some(s => s.track);
+    if (hadWebRTC) {
+      console.log('[WebRTC Streaming] Swapped to WebRTC (was using both, stopped MediaRecorder)');
+      return;
+    }
+    if (!pcRef.current) {
+      const pc = new RTCPeerConnection(rtcConfig);
+      pcRef.current = pc;
+      pc.onicecandidate = ev => { if (ev.candidate) send({ type: 'ice-candidate', candidate: ev.candidate.toJSON() }); };
+      pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') pc.close(); };
+      pc.oniceconnectionstatechange = () => { if (pc.iceConnectionState === 'failed') pc.close(); };
+    }
+    pcRef.current!.addTrack(stream.getAudioTracks()[0], stream);
+    const offer = await pcRef.current!.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
+    await pcRef.current!.setLocalDescription(offer);
+    send({ type: 'offer', sdp: offer });
+    console.log('[WebRTC Streaming] Swapped to WebRTC (created new connection)');
+  }, [send, rtcConfig]);
+
+  const startWithMediaRecorderOnly = useCallback(async () => {
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    let stream: MediaStream | null = streamFromUserGestureRef.current;
+    streamFromUserGestureRef.current = null;
+    if (!stream) {
+      const ac = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+      stream = await navigator.mediaDevices.getUserMedia({ audio: isMobile ? ac : ac });
+    }
+    streamRef.current = stream;
+    startMediaRecorder(stream);
+    console.log('[WebRTC Streaming] Started with MediaRecorder (default mode)');
+  }, [startMediaRecorder]);
 
   const createOffer = useCallback(async () => {
     if (!pcRef.current || pendingOfferRef.current) {
@@ -324,6 +365,11 @@ export const useWebRTCStreaming = (
           recMimeRef.current = data.recMime;
           setState('on');
 
+          if (data.defaultMode === 'mediarecorder') {
+            startWithMediaRecorderOnly();
+            return;
+          }
+
           if (!pcRef.current) {
             pcRef.current = new RTCPeerConnection(rtcConfig);
 
@@ -378,6 +424,14 @@ export const useWebRTCStreaming = (
           cleanup();
         }
 
+        if (data.type === 'force-fallback') {
+          fallbackToMediaRecorder();
+        }
+
+        if (data.type === 'force-webrtc') {
+          stopMediaRecorderAndUseWebRTC();
+        }
+
         if (data.type === 'need_rts') {
           if (wantSpeakRef.current) {
             send({ type: 'ready', username, priority: priorityRef.current });
@@ -408,7 +462,7 @@ export const useWebRTCStreaming = (
         }
       }
     };
-  }, [cleanup, createOffer, fallbackToMediaRecorder, send, username, wsEndpoint]);
+  }, [cleanup, createOffer, fallbackToMediaRecorder, send, startWithMediaRecorderOnly, stopMediaRecorderAndUseWebRTC, username, wsEndpoint]);
 
   useEffect(() => {
     openSocket();
@@ -427,7 +481,7 @@ export const useWebRTCStreaming = (
     if (state !== 'on' || fallbackModeRef.current) return;
     const POLL_MS = 1000; // 1s — low for testing
     const LOW_BYTES_THRESHOLD = 2200; // bytes per 1s — muted ~1.7KB, speech ~3.3KB
-    const POLLS_BEFORE_FALLBACK = 2; // ~2s low bytes when connected
+    const POLLS_BEFORE_FALLBACK = 6; // ~6s low bytes when connected
     const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 3; // ~3s never connected (low for testing)
     lastBytesSentRef.current = 0;
     let notConnectedCount = 0;
