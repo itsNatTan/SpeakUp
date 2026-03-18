@@ -6,7 +6,6 @@ import clsx from 'clsx';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Analytics from '../components/Analytics';
-import DefaultModeModal from '../components/DefaultModeModal';
 import QueueManagement from '../components/QueueManagement';
 import RoomInfo from '../components/RoomInfo';
 import { useWebRTCAudio } from '../hooks/useWebRTCAudio';
@@ -38,22 +37,15 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
   
   const [queueOpen, setQueueOpen] = useState(false);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
-  const [defaultModeOpen, setDefaultModeOpen] = useState(false);
-  const [defaultMode, setDefaultMode] = useState<'webrtc' | 'mediarecorder'>('webrtc');
-
-  const handleDefaultModeChange = useCallback((mode: 'webrtc' | 'mediarecorder') => {
-    setDefaultMode(mode);
-    setDefaultAudioMode(mode);
-  }, [setDefaultAudioMode]);
 
   const handleClick = useCallback(() => {
     if (listening) {
       stopListening();
     } else {
-      setDefaultAudioMode(defaultMode);
+      setDefaultAudioMode('webrtc');
       listen();
     }
-  }, [listen, listening, stopListening, setDefaultAudioMode, defaultMode]);
+  }, [listen, listening, stopListening, setDefaultAudioMode]);
 
   const navigate = useNavigate();
   const [timeRemaining, setTimeRemaining] = useState(
@@ -209,12 +201,6 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
           roomCode={roomCode}
           isOpen={analyticsOpen}
           onToggle={() => setAnalyticsOpen(!analyticsOpen)}
-        />
-        <DefaultModeModal
-          defaultMode={defaultMode}
-          onDefaultModeChange={handleDefaultModeChange}
-          isOpen={defaultModeOpen}
-          onToggle={() => setDefaultModeOpen(!defaultModeOpen)}
         />
       </div>
     </div>

@@ -651,7 +651,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           fallbackTimerRef.current = setTimeout(() => {
             if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
             fallbackTimerRef.current = null;
-          }, 1500);
+          }, 1000);
         } else if (data.type === 'queue-update' || data.type === 'queue-status') {
           setQueueInfo({
             queue: data.queue || [],
@@ -745,7 +745,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           fallbackTimerRef.current = setTimeout(() => {
             if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
             fallbackTimerRef.current = null;
-          }, 1500);
+          }, 1000);
         } else {
           // Log unexpected messages for debugging
           console.log('[WebRTC] Received unexpected message:', message.substring(0, 100));
