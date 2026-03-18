@@ -256,9 +256,9 @@ export class MessageHandler {
           // Update manual order to reflect this change
           this.updateManualOrder();
           
-          // Send stop message to pause their speaking
+          // Send paused stop so the client stays in "waiting" state
           try { 
-            senderWs.send(JSON.stringify({ type: 'stop' }));
+            senderWs.send(JSON.stringify({ type: 'stop', reason: 'paused' }));
           } catch {}
         }
       }
@@ -335,7 +335,7 @@ export class MessageHandler {
           if (senderWs) {
             this.sendQueue.prependClient(senderWs);
             try { 
-              senderWs.send(JSON.stringify({ type: 'stop' }));
+              senderWs.send(JSON.stringify({ type: 'stop', reason: 'paused' }));
             } catch {}
           }
         }

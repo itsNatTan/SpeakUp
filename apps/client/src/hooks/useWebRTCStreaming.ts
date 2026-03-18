@@ -424,9 +424,13 @@ export const useWebRTCStreaming = (
         }
 
         if (data.type === 'stop' || data.type === 'kicked') {
-          setState('off');
-          wantSpeakRef.current = false;
           cleanup();
+          if (data.reason === 'paused') {
+            setState('waiting');
+          } else {
+            setState('off');
+            wantSpeakRef.current = false;
+          }
         }
 
         if (data.type === 'force-fallback') {
