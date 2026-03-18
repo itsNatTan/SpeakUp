@@ -508,7 +508,7 @@ export const useWebRTCStreaming = (
     const POLL_MS = 1000; // 1s — low for testing
     const LOW_BYTES_THRESHOLD = 2200; // bytes per 1s — muted ~1.7KB, speech ~3.3KB
     const POLLS_BEFORE_FALLBACK = 6; // ~6s low bytes when connected
-    const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 3; // ~3s never connected (low for testing)
+    const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 1; // ~1s never connected — fast fallback
     lastBytesSentRef.current = 0;
     let notConnectedCount = 0;
     const iv = setInterval(async () => {
