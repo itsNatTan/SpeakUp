@@ -63,13 +63,6 @@ const Room: React.FC = () => {
     return <Navigate to="/join" />;
   }
 
-  const prewarmMic = async () => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      s.getTracks().forEach(t => t.stop());
-    } catch {}
-  };
-
   const buttonDisabled = !connected || timeRemaining <= 0;
 
   return (
@@ -136,10 +129,14 @@ const Room: React.FC = () => {
           disabled={buttonDisabled}
           onClick={async () => {
             if (state === 'off') {
-              await prewarmMic();
-              beginStream();      // OFF -> WAITING
+              try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                beginStream(stream);
+              } catch (err) {
+                console.error('[Room] Mic access failed:', err);
+              }
             } else {
-              endStream();        // WAITING/ON -> OFF (cancel queue or stop speaking)
+              endStream();
             }
           }}
           title={!connected ? 'Connecting to server…' : undefined}

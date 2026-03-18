@@ -371,7 +371,13 @@ export const useWebRTCStreaming = (
             : data.defaultMode;
 
           if (effectiveMode === 'mediarecorder') {
-            startWithMediaRecorderOnly();
+            try {
+              await startWithMediaRecorderOnly();
+            } catch (err) {
+              console.error('[WebRTC Streaming] startWithMediaRecorderOnly failed:', err);
+              cleanup();
+              setState('off');
+            }
             return;
           }
 
@@ -451,6 +457,17 @@ export const useWebRTCStreaming = (
 
         if (msg === 'CTS') {
           setState('on');
+
+          if (shouldForceMediaRecorder()) {
+            try {
+              await startWithMediaRecorderOnly();
+            } catch (err) {
+              console.error('[WebRTC Streaming] startWithMediaRecorderOnly failed (plain CTS):', err);
+              cleanup();
+              setState('off');
+            }
+            return;
+          }
 
           if (!pcRef.current) {
             pcRef.current = new RTCPeerConnection(rtcConfig);

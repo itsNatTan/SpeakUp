@@ -156,23 +156,36 @@ const QueueManagement: React.FC<Props> = ({
                 </p>
               </div>
               {onSetSortMode && (
-                <button
-                  onClick={() => {
-                    const newMode = sortMode === 'fifo' ? 'priority' : 'fifo';
-                    onSetSortMode(newMode);
-                  }}
-                  className={clsx(
-                    'px-3 py-1.5 rounded text-sm font-medium transition-colors',
-                    'flex items-center gap-1.5',
-                    sortMode === 'priority'
-                      ? 'bg-blue-600 text-white hover:bg-blue-700'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  )}
-                  title={sortMode === 'fifo' ? 'Sort by priority' : 'Sort by join time'}
-                >
-                  <Icon icon={sortMode === 'priority' ? 'tabler:sort-descending' : 'tabler:clock'} className="w-4 h-4" />
-                  <span>{sortMode === 'priority' ? 'Priority' : 'FIFO'}</span>
-                </button>
+                <div className="flex rounded-lg overflow-hidden border border-gray-300">
+                  <button
+                    onClick={() => onSetSortMode('fifo')}
+                    className={clsx(
+                      'px-3 py-1.5 text-sm font-medium transition-colors',
+                      'flex items-center gap-1.5',
+                      sortMode === 'fifo'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-100'
+                    )}
+                    title="Sort by join time (first in, first out)"
+                  >
+                    <Icon icon="tabler:clock" className="w-4 h-4" />
+                    <span>FIFO</span>
+                  </button>
+                  <button
+                    onClick={() => onSetSortMode('priority')}
+                    className={clsx(
+                      'px-3 py-1.5 text-sm font-medium transition-colors',
+                      'flex items-center gap-1.5 border-l border-gray-300',
+                      sortMode === 'priority'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-100'
+                    )}
+                    title="Sort by priority level"
+                  >
+                    <Icon icon="tabler:sort-descending" className="w-4 h-4" />
+                    <span>Priority</span>
+                  </button>
+                </div>
               )}
             </div>
           </div>
