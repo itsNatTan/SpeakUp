@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { shouldForceMediaRecorder } from '../config/deviceOverrides';
 
 /** Pick MediaRecorder mime for WebRTC→MediaRecorder fallback (e.g. iPhone). */
 function pickRecorderMime(serverHint?: string): string | undefined {
@@ -365,7 +366,11 @@ export const useWebRTCStreaming = (
           recMimeRef.current = data.recMime;
           setState('on');
 
-          if (data.defaultMode === 'mediarecorder') {
+          const effectiveMode = shouldForceMediaRecorder()
+            ? 'mediarecorder'
+            : data.defaultMode;
+
+          if (effectiveMode === 'mediarecorder') {
             startWithMediaRecorderOnly();
             return;
           }

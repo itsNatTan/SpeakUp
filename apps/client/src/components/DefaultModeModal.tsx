@@ -1,5 +1,6 @@
 import { Icon } from '@iconify/react';
 import clsx from 'clsx';
+import { MEDIARECORDER_FORCED_DEVICES } from '../config/deviceOverrides';
 
 type Props = {
   defaultMode: 'webrtc' | 'mediarecorder';
@@ -89,6 +90,14 @@ const DefaultModeModal: React.FC<Props> = ({
                 </span>
               </button>
             </div>
+            {MEDIARECORDER_FORCED_DEVICES.length > 0 && (
+              <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                <span className="font-medium">Note:</span>{' '}
+                {MEDIARECORDER_FORCED_DEVICES.map(d => d.label).join(', ')}{' '}
+                {MEDIARECORDER_FORCED_DEVICES.length === 1 ? 'device will' : 'devices will'}{' '}
+                always use MediaRecorder regardless of this setting (WebRTC is not recommended).
+              </p>
+            )}
           </div>
         </div>
       )}

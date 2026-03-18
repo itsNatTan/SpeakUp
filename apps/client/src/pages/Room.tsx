@@ -1,10 +1,11 @@
 import { roomsApi } from '@api/client';
 import { Icon } from '@iconify/react';
 import clsx from 'clsx';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import Header from '../components/Header';
 import RoomInfo from '../components/RoomInfo';
+import { shouldForceMediaRecorder, getMatchedDeviceLabel } from '../config/deviceOverrides';
 import { useWebRTCStreaming } from '../hooks/useWebRTCStreaming';
 import stores from '../stores';
 import { SERVER_HOST, WS_PROTOCOL } from '../utils/constants';
@@ -22,6 +23,11 @@ const Room: React.FC = () => {
     priority,
   );
   const navigate = useNavigate();
+
+  const deviceOverride = useMemo(() => {
+    if (!shouldForceMediaRecorder()) return null;
+    return getMatchedDeviceLabel();
+  }, []);
 
   const [timeRemaining, setTimeRemaining] = useState(Number.MAX_SAFE_INTEGER);
   useEffect(() => {
@@ -73,6 +79,15 @@ const Room: React.FC = () => {
       <hr className="w-96 mx-auto" />
 
       <div className="flex flex-col gap-y-4 justify-center items-center h-96">
+        {deviceOverride && (
+          <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm max-w-sm">
+            <Icon icon="tabler:alert-triangle" className="w-5 h-5 flex-shrink-0" />
+            <span>
+              WebRTC is not recommended on {deviceOverride}. Your audio will use MediaRecorder automatically.
+            </span>
+          </div>
+        )}
+
         {/* Priority Selector - show when off or waiting */}
         {(state === 'off' || state === 'waiting') && (
           <div className="flex flex-col gap-2 items-center">
