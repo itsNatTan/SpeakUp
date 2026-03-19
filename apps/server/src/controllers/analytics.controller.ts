@@ -28,12 +28,11 @@ r.get('/:code/export', (c) => {
   const roomCode = c.req.param('code');
   const csv = analyticsService.exportToCSV(roomCode);
   
-  // Get room creation time (expiredAt - 1 hour = creation time)
+  // Get room creation time (expiredAt - 2 hours = creation time)
   const room = roomService.find(roomCode);
   let creationDate = new Date();
   if (room && room.expiredAt) {
-    // expiredAt is 1 hour after creation
-    creationDate = new Date(room.expiredAt.getTime() - 60 * 60 * 1000);
+    creationDate = new Date(room.expiredAt.getTime() - 2 * 60 * 60 * 1000);
   }
   
   // Format as ddmmyyyy

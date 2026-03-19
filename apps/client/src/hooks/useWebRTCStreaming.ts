@@ -505,7 +505,7 @@ export const useWebRTCStreaming = (
   /** Detect when WebRTC isn't transmitting audio (muted mic, iPhone failure) or never connects (no listener) and fall back to MediaRecorder. */
   useEffect(() => {
     if (state !== 'on' || fallbackModeRef.current) return;
-    const POLL_MS = 1000; // 1s — low for testing
+    const POLL_MS = 500;
     const LOW_BYTES_THRESHOLD = 2200; // bytes per 1s — muted ~1.7KB, speech ~3.3KB
     const POLLS_BEFORE_FALLBACK = 6; // ~6s low bytes when connected
     const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 1; // ~1s never connected — fast fallback

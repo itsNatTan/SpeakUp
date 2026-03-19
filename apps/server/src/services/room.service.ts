@@ -8,11 +8,11 @@ const generateRoomCode = () => {
   return random.generateUppercase(3) + random.generateNumeric(3);
 };
 
-const oneHour = 60 * 60 * 1000;
-const roomCache = new Cache<Room>({ defaultTtl: oneHour });
+const twoHours = 2 * 60 * 60 * 1000;
+const roomCache = new Cache<Room>({ defaultTtl: twoHours });
 
 // Store cooldowns for each room to allow for file downloads
-const sixHours = 6 * oneHour;
+const sixHours = 3 * twoHours;
 const cooldownCache = new Cache<Room & { cooldown: Date }>({
   defaultTtl: sixHours,
 });
@@ -24,7 +24,7 @@ export default {
     const room: Room = {
       code: generateRoomCode(),
       persistent: false,
-      expiredAt: new Date(Date.now() + oneHour),
+      expiredAt: new Date(Date.now() + twoHours),
     };
 
     // Make sure room code is unique
