@@ -506,9 +506,9 @@ export const useWebRTCStreaming = (
   useEffect(() => {
     if (state !== 'on' || fallbackModeRef.current) return;
     const POLL_MS = 500;
-    const LOW_BYTES_THRESHOLD = 2200; // bytes per 1s — muted ~1.7KB, speech ~3.3KB
-    const POLLS_BEFORE_FALLBACK = 6; // ~6s low bytes when connected
-    const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 1; // ~1s never connected — fast fallback
+    const LOW_BYTES_THRESHOLD = 1100; // bytes per 0.5s — muted ~850B, speech ~1.65KB
+    const POLLS_BEFORE_FALLBACK = 1; // ~0.5s — switch immediately if no audio detected
+    const POLLS_BEFORE_FALLBACK_NOT_CONNECTED = 1; // ~0.5s never connected — fast fallback
     lastBytesSentRef.current = 0;
     let notConnectedCount = 0;
     const iv = setInterval(async () => {
