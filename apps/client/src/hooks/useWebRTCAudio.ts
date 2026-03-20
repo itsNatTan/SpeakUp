@@ -37,6 +37,12 @@ export type QueueInfo = {
   sortMode?: 'fifo' | 'priority';
 };
 
+const MAX_RECONNECT_ATTEMPTS = 50;
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const CONNECT_TIMEOUT_MS = 5000;
+
 export const useWebRTCAudio = (wsEndpoint: string) => {
   const [playing, setPlaying] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
@@ -58,6 +64,14 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const gotTrackForSpeakerRef = useRef(false);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestedWebRTCRef = useRef(false);
+
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const mountedRef = useRef(true);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasListeningRef = useRef(false);
+  const shouldReconnectRef = useRef(true);
 
   // Detect device types for specific handling (used throughout the hook)
   // iOS Safari with "Request Desktop Website" reports Mac-like UA (no "iPhone") - use platform + touch as fallback
@@ -604,16 +618,45 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
+    connectionTimeoutRef.current = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        console.log('[WS] Connection timeout after 5s, retrying');
+        try { ws.close(); } catch {}
+      }
+    }, CONNECT_TIMEOUT_MS);
+
     ws.onopen = () => {
       isOpenRef.current = true;
+      reconnectAttemptsRef.current = 0;
+      shouldReconnectRef.current = true;
       console.log('[WS] open');
-      // Initialize peer connection immediately when socket opens
-      // This ensures it's ready as soon as possible
+
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      heartbeatRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send('PING');
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+
       if (!pcRef.current) {
         setupPeerConnection();
         console.log('[WebRTC] Peer connection initialized on socket open');
       }
-      // Request queue status when socket opens (for queue monitoring)
+
+      if (wasListeningRef.current) {
+        console.log('[WS] Reconnected — restoring listening state');
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send('LISTEN');
+          const fmt = pickPlaybackMime();
+          if (fmt) ws.send(`FORMAT ${fmt}`);
+        }
+      }
+
       setTimeout(() => {
         if (wsRef.current && isOpenRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           wsRef.current.send('QUEUE_STATUS');
@@ -700,9 +743,16 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           }
         }
       } catch (error) {
-        // Handle non-JSON messages (backward compatibility)
         const message = event.data.toString();
-        
+
+        if (message === 'PONG') return;
+
+        if (message === 'Invalid room code' || message === 'Room not found') {
+          console.error('[WS]', message);
+          shouldReconnectRef.current = false;
+          return;
+        }
+
         if (message === 'CLEAR' || message === 'STOP') {
           setAudioMode('webrtc');
           console.log('[WebRTC] Received clear/stop message:', message);
@@ -757,10 +807,34 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       console.log('[WS] close');
       isOpenRef.current = false;
       wsRef.current = null;
-      setListening(false);
+
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+
       if (pcRef.current) {
         pcRef.current.close();
         pcRef.current = null;
+      }
+
+      if (mountedRef.current && shouldReconnectRef.current &&
+          reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        const delay = Math.min(
+          RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current),
+          RECONNECT_MAX_DELAY_MS,
+        );
+        reconnectAttemptsRef.current++;
+        console.log(`[WS] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
+        reconnectTimerRef.current = setTimeout(() => {
+          if (mountedRef.current) openSocket();
+        }, delay);
+      } else if (!mountedRef.current) {
+        setListening(false);
       }
     };
 
@@ -855,7 +929,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
 
   const listen = useCallback(() => {
     setListening(true);
-    // Socket should already be open from the useEffect above
+    wasListeningRef.current = true;
     
     // Send LISTEN message - peer connection should already be initialized in onopen
     // But ensure it exists just in case
@@ -883,6 +957,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
 
   const stop = useCallback(() => {
     setListening(false);
+    wasListeningRef.current = false;
     setPlaying(null);
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -950,7 +1025,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
       providerRef.current?.dispose();
       providerRef.current = null;

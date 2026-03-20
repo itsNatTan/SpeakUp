@@ -34,6 +34,12 @@ type SignalingMessage =
   | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
+const MAX_RECONNECT_ATTEMPTS = 50;
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 20_000;
+const CONNECT_TIMEOUT_MS = 5000;
+
 export const useWebRTCStreaming = (
   wsEndpoint: string,
   username: string = '',
@@ -60,6 +66,13 @@ export const useWebRTCStreaming = (
   /** Consecutive polls where bytesSent was below threshold (muted/failed mic or broken WebRTC). */
   const lowBytesSentCountRef = useRef(0);
   const lastBytesSentRef = useRef(0);
+
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const mountedRef = useRef(true);
+  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shouldReconnectRef = useRef(true);
   
   // Update priority ref when it changes
   useEffect(() => {
@@ -329,9 +342,30 @@ export const useWebRTCStreaming = (
     const ws = new WebSocket(wsEndpoint);
     wsRef.current = ws;
 
+    connectionTimeoutRef.current = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        console.log('[WS] Connection timeout after 5s, retrying');
+        try { ws.close(); } catch {}
+      }
+    }, CONNECT_TIMEOUT_MS);
+
     ws.onopen = () => {
       isOpenRef.current = true;
       setConnected(true);
+      reconnectAttemptsRef.current = 0;
+      shouldReconnectRef.current = true;
+
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+      heartbeatRef.current = setInterval(() => {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send('PING');
+        }
+      }, HEARTBEAT_INTERVAL_MS);
 
       if (wantSpeakRef.current) {
         send({ type: 'ready', username, priority: priorityRef.current });
@@ -341,7 +375,41 @@ export const useWebRTCStreaming = (
     ws.onclose = () => {
       isOpenRef.current = false;
       setConnected(false);
-      cleanup();
+
+      if (heartbeatRef.current) {
+        clearInterval(heartbeatRef.current);
+        heartbeatRef.current = null;
+      }
+      if (connectionTimeoutRef.current) {
+        clearTimeout(connectionTimeoutRef.current);
+        connectionTimeoutRef.current = null;
+      }
+
+      // Light cleanup: close PC and MediaRecorder but keep media stream for reconnection
+      if (mediaRecorderRef.current?.state === 'recording') {
+        try { (mediaRecorderRef.current as any).requestData?.(); } catch {}
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current = null;
+      }
+      fallbackModeRef.current = false;
+      lowBytesSentCountRef.current = 0;
+      lastBytesSentRef.current = 0;
+      pcRef.current?.close();
+      pcRef.current = null;
+      pendingOfferRef.current = false;
+
+      if (mountedRef.current && shouldReconnectRef.current &&
+          reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        const delay = Math.min(
+          RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttemptsRef.current),
+          RECONNECT_MAX_DELAY_MS,
+        );
+        reconnectAttemptsRef.current++;
+        console.log(`[WS] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
+        reconnectTimerRef.current = setTimeout(() => {
+          if (mountedRef.current) openSocket();
+        }, delay);
+      }
     };
 
     ws.onerror = () => {};
@@ -455,6 +523,14 @@ export const useWebRTCStreaming = (
       } catch {
         const msg = event.data.toString();
 
+        if (msg === 'PONG') return;
+
+        if (msg === 'Invalid room code' || msg === 'Room not found') {
+          console.error('[WS]', msg);
+          shouldReconnectRef.current = false;
+          return;
+        }
+
         if (msg === 'CTS') {
           setState('on');
 
@@ -491,8 +567,13 @@ export const useWebRTCStreaming = (
   }, [cleanup, createOffer, fallbackToMediaRecorder, send, startWithMediaRecorderOnly, stopMediaRecorderAndUseWebRTC, username, wsEndpoint]);
 
   useEffect(() => {
+    mountedRef.current = true;
     openSocket();
     return () => {
+      mountedRef.current = false;
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (connectionTimeoutRef.current) clearTimeout(connectionTimeoutRef.current);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       try {
         wsRef.current?.close();
       } catch {}

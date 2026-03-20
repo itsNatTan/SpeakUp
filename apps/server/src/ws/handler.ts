@@ -104,6 +104,8 @@ export class MessageHandler {
         return this.handleSkip;
       case 'QUEUE_STATUS':
         return this.handleQueueStatus;
+      case 'PING':
+        return this.handlePing;
       default:
         return this.handleAudio;
     }
@@ -532,6 +534,10 @@ export class MessageHandler {
       queueSize: queue.length, // Queue size excludes current speaker
       sortMode: this.queueSortMode,
     };
+  };
+
+  private handlePing = (ws: WebSocket) => {
+    try { ws.send('PONG'); } catch {}
   };
 
   private handleQueueStatus = (ws: WebSocket) => {
