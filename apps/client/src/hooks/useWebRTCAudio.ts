@@ -1058,43 +1058,65 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     }
   }, []);
 
-  // Anti-screech filter chain: hp (80 Hz) → lp1 (4 kHz) → lp2 (4 kHz) → dest.
-  // WebRTC streams are connected to filterInputRef in ontrack; the filtered
-  // output (filteredStreamRef) is what gets set on the audio element.
+  // Two independent anti-screech filter chains on the same AudioContext:
+  //
+  // Chain A (WebRTC): createMediaStreamSource → hp_a → lp_a × 3 → dest_a
+  //   Connected per-speaker in ontrack; dest_a.stream is set on the <audio>
+  //   element's srcObject so the element only ever plays filtered audio.
+  //
+  // Chain B (MSE / element output): createMediaElementSource → hp_b → lp_b × 3 → ctx.destination
+  //   Captures whatever the <audio> element outputs (MSE content, or the
+  //   already-filtered WebRTC stream) and routes it through a second filter
+  //   pass to the speakers.  For MSE this is the ONLY filter pass; for WebRTC
+  //   it's a harmless second pass that makes rolloff steeper.
   useEffect(() => {
+    const el = audioRef.current;
     if (outputCtxRef.current) return;
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const ctx: AudioContext = new AudioCtx();
 
-      const hp = ctx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.value = 80;
-      hp.Q.value = 0.707;
+      // --- helper: build a highpass(80) → lowpass(4k) × 3 chain ---
+      const buildChain = () => {
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 80;
+        hp.Q.value = 0.707;
 
-      const lp1 = ctx.createBiquadFilter();
-      lp1.type = 'lowpass';
-      lp1.frequency.value = 4000;
-      lp1.Q.value = 0.707;
+        const lps = [0, 1, 2].map(() => {
+          const lp = ctx.createBiquadFilter();
+          lp.type = 'lowpass';
+          lp.frequency.value = 4000;
+          lp.Q.value = 0.707;
+          return lp;
+        });
 
-      const lp2 = ctx.createBiquadFilter();
-      lp2.type = 'lowpass';
-      lp2.frequency.value = 4000;
-      lp2.Q.value = 0.707;
+        hp.connect(lps[0]);
+        lps[0].connect(lps[1]);
+        lps[1].connect(lps[2]);
+        return { input: hp, output: lps[2] };
+      };
 
+      // Chain A — WebRTC streams (connected in ontrack)
+      const chainA = buildChain();
       const dest = ctx.createMediaStreamDestination();
+      chainA.output.connect(dest);
+      filterInputRef.current = chainA.input;
+      filteredStreamRef.current = dest.stream;
 
-      hp.connect(lp1);
-      lp1.connect(lp2);
-      lp2.connect(dest);
+      // Chain B — element output (MSE / fallback binary audio)
+      if (el) {
+        const chainB = buildChain();
+        const elSource = ctx.createMediaElementSource(el);
+        elSource.connect(chainB.input);
+        chainB.output.connect(ctx.destination);
+      }
 
       outputCtxRef.current = ctx;
-      filterInputRef.current = hp;
-      filteredStreamRef.current = dest.stream;
-      console.log('[AntiScreech] Filter chain ready (waiting for WebRTC streams)');
+      console.log('[AntiScreech] Dual filter chains ready');
     } catch (e) {
-      console.warn('[AntiScreech] Failed to set up filter chain:', e);
+      console.warn('[AntiScreech] Failed to set up filter chains:', e);
     }
   }, []);
 
