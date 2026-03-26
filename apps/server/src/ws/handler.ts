@@ -750,8 +750,26 @@ export class MessageHandler {
       const priority = signal.priority ?? 0;
       
       if (!senderKey) {
-        // Need to register this client first
         const username = signal.username || 'WebRTC';
+
+        // Purge stale entries for the same username (e.g. old WS that dropped
+        // but whose close handler hasn't fired yet). Without this, the dead WS
+        // sits at the front of the queue blocking the live reconnection.
+        for (const [existingKey, existingWs] of Object.entries(this.clientKeyMap)) {
+          if (existingWs === ws) continue;
+          const existingName = existingKey.slice(0, existingKey.length - 6);
+          if (existingName === username && existingWs.readyState !== WebSocket.OPEN) {
+            this.sendQueue.removeClient(existingWs);
+            if (this.currentCtsKey === existingKey) {
+              this.currentCtsKey = undefined;
+              this.lastSenderKey = undefined;
+            }
+            delete this.clientKeyMap[existingKey];
+            delete this.clientInfoMap[existingKey];
+            delete this.storageBuffer[existingKey];
+          }
+        }
+
         const key = `${username}-${random.generateLowercase(5)}`;
         this.bufferKey = key;
         this.trackClient(ws, key, priority);
