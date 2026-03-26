@@ -1077,7 +1077,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       if (!AudioCtx) return;
       const ctx: AudioContext = new AudioCtx();
 
-      // --- helper: build a highpass(80) → lowpass(3k) × 3 chain ---
+      // --- helper: build a highpass(80) → lowpass(2.5k) × 3 chain ---
+      // 2.5 kHz keeps F1+F2 formants intact (intelligible for 99%+ of voices)
+      // while aggressively killing feedback-prone frequencies above that.
       const buildChain = () => {
         const hp = ctx.createBiquadFilter();
         hp.type = 'highpass';
@@ -1087,7 +1089,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         const lps = [0, 1, 2].map(() => {
           const lp = ctx.createBiquadFilter();
           lp.type = 'lowpass';
-          lp.frequency.value = 3000;
+          lp.frequency.value = 2500;
           lp.Q.value = 0.707;
           return lp;
         });
