@@ -34,6 +34,38 @@ type SignalingMessage =
   | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
+// Reduce mic sensitivity to weaken feedback loops. 0.5 = −6 dB; close-mic
+// speech stays intelligible while room speaker bleed is halved each round-trip.
+const MIC_GAIN = 0.5;
+
+type GainHandle = { stream: MediaStream; dispose: () => void };
+
+function applyMicGain(raw: MediaStream): GainHandle | null {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return null;
+    const ctx: AudioContext = new AudioCtx();
+    if (ctx.state === 'suspended') ctx.resume();
+    const src = ctx.createMediaStreamSource(raw);
+    const gain = ctx.createGain();
+    gain.gain.value = MIC_GAIN;
+    const dest = ctx.createMediaStreamDestination();
+    src.connect(gain).connect(dest);
+    return {
+      stream: dest.stream,
+      dispose: () => {
+        try { src.disconnect(); } catch {}
+        try { gain.disconnect(); } catch {}
+        try { dest.disconnect(); } catch {}
+        try { ctx.close(); } catch {}
+      },
+    };
+  } catch (e) {
+    console.warn('[MicGain] Failed, using raw stream:', e);
+    return null;
+  }
+}
+
 const MAX_RECONNECT_ATTEMPTS = 50;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
@@ -63,6 +95,7 @@ export const useWebRTCStreaming = (
   const recMimeRef = useRef<string | undefined>(undefined);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const fallbackModeRef = useRef(false);
+  const micGainRef = useRef<GainHandle | null>(null);
   /** Consecutive polls where bytesSent was below threshold (muted/failed mic or broken WebRTC). */
   const lowBytesSentCountRef = useRef(0);
   const lastBytesSentRef = useRef(0);
@@ -160,6 +193,8 @@ export const useWebRTCStreaming = (
     lowBytesSentCountRef.current = 0;
     lastBytesSentRef.current = 0;
 
+    micGainRef.current?.dispose();
+    micGainRef.current = null;
 
     pcRef.current?.close();
     pcRef.current = null;
@@ -197,7 +232,7 @@ export const useWebRTCStreaming = (
 
   const fallbackToMediaRecorder = useCallback(() => {
     if (fallbackModeRef.current || !streamRef.current) return;
-    startMediaRecorder(streamRef.current);
+    startMediaRecorder(micGainRef.current?.stream ?? streamRef.current);
     console.log('[WebRTC Streaming] Switched to MediaRecorder');
   }, [startMediaRecorder]);
 
@@ -223,7 +258,8 @@ export const useWebRTCStreaming = (
       pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') pc.close(); };
       pc.oniceconnectionstatechange = () => { if (pc.iceConnectionState === 'failed') pc.close(); };
     }
-    pcRef.current!.addTrack(stream.getAudioTracks()[0], stream);
+    const outStream = micGainRef.current?.stream ?? stream;
+    pcRef.current!.addTrack(outStream.getAudioTracks()[0], outStream);
     const offer = await pcRef.current!.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
     await pcRef.current!.setLocalDescription(offer);
     send({ type: 'offer', sdp: offer });
@@ -240,7 +276,10 @@ export const useWebRTCStreaming = (
     }
 
     streamRef.current = stream;
-    startMediaRecorder(stream);
+    micGainRef.current?.dispose();
+    const gh = applyMicGain(stream);
+    micGainRef.current = gh;
+    startMediaRecorder(gh?.stream ?? stream);
     console.log('[WebRTC Streaming] Started with MediaRecorder (default mode)');
   }, [startMediaRecorder]);
 
@@ -281,14 +320,18 @@ export const useWebRTCStreaming = (
       });
 
       streamRef.current = stream;
+      micGainRef.current?.dispose();
+      const gh = applyMicGain(stream);
+      micGainRef.current = gh;
+      const outStream = gh?.stream ?? stream;
 
-      stream.getAudioTracks().forEach(track => {
+      outStream.getAudioTracks().forEach(track => {
         console.log('[WebRTC Streaming] Adding track to peer connection', {
           id: track.id,
           enabled: track.enabled,
           readyState: track.readyState,
         });
-        pcRef.current!.addTrack(track, stream);
+        pcRef.current!.addTrack(track, outStream);
       });
 
       pendingOfferRef.current = true;
