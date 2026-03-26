@@ -34,12 +34,19 @@ type SignalingMessage =
   | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
-// --- Noise gate to prevent audio feedback loops in lecture-hall settings ---
-// Direct speech into the phone mic is loud; feedback picked up from room
-// speakers is attenuated by distance.  A noise gate passes direct speech but
-// blocks the weaker feedback signal, breaking the loop during pauses.
-const NOISE_GATE_THRESHOLD = 0.008;
-const NOISE_GATE_HOLD_MS = 300;
+// --- Feedback suppression chain for lecture-hall audio ---
+// A noise gate alone cannot stop feedback while the student is speaking because
+// the gate is open and feedback passes through too.  We need multiple layers:
+//
+//  1. High-pass filter  – removes low-freq room resonance where feedback builds
+//  2. Compressor         – caps output level so the round-trip loop gain stays < 1
+//  3. Noise gate         – mutes during pauses to break the loop completely
+//  4. Output gain cut    – extra headroom so even un-gated feedback decays
+//
+// Together these ensure feedback *decays* each loop instead of growing.
+
+const NOISE_GATE_THRESHOLD = 0.015;
+const NOISE_GATE_HOLD_MS = 250;
 const NOISE_GATE_POLL_MS = 20;
 
 type NoiseGateHandle = { dispose: () => void };
@@ -56,15 +63,41 @@ function applyNoiseGate(rawStream: MediaStream): {
     if (ctx.state === 'suspended') ctx.resume();
 
     const source = ctx.createMediaStreamSource(rawStream);
+
+    // 1) High-pass filter: cut low-freq rumble & room resonance
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = 150;
+    highpass.Q.value = 0.707;
+
+    // 2) Compressor: limit dynamic range so feedback can't grow each loop
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.threshold.value = -24;
+    compressor.knee.value = 12;
+    compressor.ratio.value = 8;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.25;
+
+    // 3) Noise gate via analyser + gateGain
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
+    const gateGain = ctx.createGain();
+    gateGain.gain.value = 0;
+
+    // 4) Output gain: reduce overall level to keep round-trip gain < 1
+    const outputGain = ctx.createGain();
+    outputGain.gain.value = 0.65;
+
     const dest = ctx.createMediaStreamDestination();
 
-    source.connect(analyser);
-    source.connect(gain);
-    gain.connect(dest);
+    // source → highpass → compressor → analyser (tap)
+    //                                → gateGain → outputGain → dest
+    source.connect(highpass);
+    highpass.connect(compressor);
+    compressor.connect(analyser);
+    compressor.connect(gateGain);
+    gateGain.connect(outputGain);
+    outputGain.connect(dest);
 
     const buf = new Float32Array(analyser.fftSize);
     let gateOpen = false;
@@ -79,12 +112,12 @@ function applyNoiseGate(rawStream: MediaStream): {
       if (rms >= NOISE_GATE_THRESHOLD) {
         if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
         if (!gateOpen) {
-          gain.gain.setTargetAtTime(1, ctx.currentTime, 0.006);
+          gateGain.gain.setTargetAtTime(1, ctx.currentTime, 0.006);
           gateOpen = true;
         }
       } else if (gateOpen && !holdTimer) {
         holdTimer = setTimeout(() => {
-          gain.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
+          gateGain.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
           gateOpen = false;
           holdTimer = null;
         }, NOISE_GATE_HOLD_MS);
@@ -94,16 +127,19 @@ function applyNoiseGate(rawStream: MediaStream): {
     const dispose = () => {
       clearInterval(poll);
       if (holdTimer) clearTimeout(holdTimer);
-      try { gain.disconnect(); } catch {}
       try { source.disconnect(); } catch {}
+      try { highpass.disconnect(); } catch {}
+      try { compressor.disconnect(); } catch {}
       try { analyser.disconnect(); } catch {}
+      try { gateGain.disconnect(); } catch {}
+      try { outputGain.disconnect(); } catch {}
       try { dest.disconnect(); } catch {}
       try { ctx.close(); } catch {}
     };
 
     return { processedStream: dest.stream, handle: { dispose } };
   } catch (e) {
-    console.warn('[NoiseGate] Failed to create noise gate, using raw stream:', e);
+    console.warn('[FeedbackSuppression] Failed, using raw stream:', e);
     return null;
   }
 }
