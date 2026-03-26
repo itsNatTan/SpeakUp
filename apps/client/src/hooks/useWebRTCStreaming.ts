@@ -34,116 +34,6 @@ type SignalingMessage =
   | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
-// --- Feedback suppression chain for lecture-hall audio ---
-// A noise gate alone cannot stop feedback while the student is speaking because
-// the gate is open and feedback passes through too.  We need multiple layers:
-//
-//  1. High-pass filter  – removes low-freq room resonance where feedback builds
-//  2. Compressor         – caps output level so the round-trip loop gain stays < 1
-//  3. Noise gate         – mutes during pauses to break the loop completely
-//  4. Output gain cut    – extra headroom so even un-gated feedback decays
-//
-// Together these ensure feedback *decays* each loop instead of growing.
-
-const NOISE_GATE_THRESHOLD = 0.015;
-const NOISE_GATE_HOLD_MS = 250;
-const NOISE_GATE_POLL_MS = 20;
-
-type NoiseGateHandle = { dispose: () => void };
-
-function applyNoiseGate(rawStream: MediaStream): {
-  processedStream: MediaStream;
-  handle: NoiseGateHandle;
-} | null {
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return null;
-
-    const ctx: AudioContext = new AudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
-
-    const source = ctx.createMediaStreamSource(rawStream);
-
-    // 1) High-pass filter: cut low-freq rumble & room resonance
-    const highpass = ctx.createBiquadFilter();
-    highpass.type = 'highpass';
-    highpass.frequency.value = 150;
-    highpass.Q.value = 0.707;
-
-    // 2) Compressor: limit dynamic range so feedback can't grow each loop
-    const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = -24;
-    compressor.knee.value = 12;
-    compressor.ratio.value = 8;
-    compressor.attack.value = 0.003;
-    compressor.release.value = 0.25;
-
-    // 3) Noise gate via analyser + gateGain
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 2048;
-    const gateGain = ctx.createGain();
-    gateGain.gain.value = 0;
-
-    // 4) Output gain: reduce overall level to keep round-trip gain < 1
-    const outputGain = ctx.createGain();
-    outputGain.gain.value = 0.65;
-
-    const dest = ctx.createMediaStreamDestination();
-
-    // source → highpass → compressor → analyser (tap)
-    //                                → gateGain → outputGain → dest
-    source.connect(highpass);
-    highpass.connect(compressor);
-    compressor.connect(analyser);
-    compressor.connect(gateGain);
-    gateGain.connect(outputGain);
-    outputGain.connect(dest);
-
-    const buf = new Float32Array(analyser.fftSize);
-    let gateOpen = false;
-    let holdTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const poll = setInterval(() => {
-      analyser.getFloatTimeDomainData(buf);
-      let sum = 0;
-      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
-      const rms = Math.sqrt(sum / buf.length);
-
-      if (rms >= NOISE_GATE_THRESHOLD) {
-        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
-        if (!gateOpen) {
-          gateGain.gain.setTargetAtTime(1, ctx.currentTime, 0.006);
-          gateOpen = true;
-        }
-      } else if (gateOpen && !holdTimer) {
-        holdTimer = setTimeout(() => {
-          gateGain.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
-          gateOpen = false;
-          holdTimer = null;
-        }, NOISE_GATE_HOLD_MS);
-      }
-    }, NOISE_GATE_POLL_MS);
-
-    const dispose = () => {
-      clearInterval(poll);
-      if (holdTimer) clearTimeout(holdTimer);
-      try { source.disconnect(); } catch {}
-      try { highpass.disconnect(); } catch {}
-      try { compressor.disconnect(); } catch {}
-      try { analyser.disconnect(); } catch {}
-      try { gateGain.disconnect(); } catch {}
-      try { outputGain.disconnect(); } catch {}
-      try { dest.disconnect(); } catch {}
-      try { ctx.close(); } catch {}
-    };
-
-    return { processedStream: dest.stream, handle: { dispose } };
-  } catch (e) {
-    console.warn('[FeedbackSuppression] Failed, using raw stream:', e);
-    return null;
-  }
-}
-
 const MAX_RECONNECT_ATTEMPTS = 50;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
@@ -176,9 +66,6 @@ export const useWebRTCStreaming = (
   /** Consecutive polls where bytesSent was below threshold (muted/failed mic or broken WebRTC). */
   const lowBytesSentCountRef = useRef(0);
   const lastBytesSentRef = useRef(0);
-
-  const noiseGateRef = useRef<NoiseGateHandle | null>(null);
-  const rawStreamRef = useRef<MediaStream | null>(null);
 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -276,11 +163,6 @@ export const useWebRTCStreaming = (
     pcRef.current?.close();
     pcRef.current = null;
 
-    noiseGateRef.current?.dispose();
-    noiseGateRef.current = null;
-    rawStreamRef.current?.getTracks().forEach(t => t.stop());
-    rawStreamRef.current = null;
-
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     streamFromUserGestureRef.current?.getTracks().forEach(t => t.stop());
@@ -356,21 +238,8 @@ export const useWebRTCStreaming = (
       stream = await navigator.mediaDevices.getUserMedia({ audio: isMobile ? ac : ac });
     }
 
-    noiseGateRef.current?.dispose();
-    noiseGateRef.current = null;
-    rawStreamRef.current?.getTracks().forEach(t => t.stop());
-    rawStreamRef.current = null;
-
-    rawStreamRef.current = stream;
-    const gate = applyNoiseGate(stream);
-    if (gate) {
-      noiseGateRef.current = gate.handle;
-      streamRef.current = gate.processedStream;
-      console.log('[NoiseGate] Active on MediaRecorder stream');
-    } else {
-      streamRef.current = stream;
-    }
-    startMediaRecorder(streamRef.current);
+    streamRef.current = stream;
+    startMediaRecorder(stream);
     console.log('[WebRTC Streaming] Started with MediaRecorder (default mode)');
   }, [startMediaRecorder]);
 
@@ -410,31 +279,15 @@ export const useWebRTCStreaming = (
         trackIds: stream.getAudioTracks().map(t => t.id),
       });
 
-      // Clean up any previous noise gate / raw stream
-      noiseGateRef.current?.dispose();
-      noiseGateRef.current = null;
-      rawStreamRef.current?.getTracks().forEach(t => t.stop());
-      rawStreamRef.current = null;
+      streamRef.current = stream;
 
-      rawStreamRef.current = stream;
-      const gate = applyNoiseGate(stream);
-      let outStream: MediaStream;
-      if (gate) {
-        noiseGateRef.current = gate.handle;
-        outStream = gate.processedStream;
-        console.log('[NoiseGate] Active on WebRTC stream');
-      } else {
-        outStream = stream;
-      }
-      streamRef.current = outStream;
-
-      outStream.getAudioTracks().forEach(track => {
+      stream.getAudioTracks().forEach(track => {
         console.log('[WebRTC Streaming] Adding track to peer connection', {
           id: track.id,
           enabled: track.enabled,
           readyState: track.readyState,
         });
-        pcRef.current!.addTrack(track, outStream);
+        pcRef.current!.addTrack(track, stream);
       });
 
       pendingOfferRef.current = true;
@@ -544,13 +397,6 @@ export const useWebRTCStreaming = (
       pcRef.current?.close();
       pcRef.current = null;
       pendingOfferRef.current = false;
-
-      noiseGateRef.current?.dispose();
-      noiseGateRef.current = null;
-      rawStreamRef.current?.getTracks().forEach(t => t.stop());
-      rawStreamRef.current = null;
-      streamRef.current?.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
 
       if (mountedRef.current && shouldReconnectRef.current &&
           reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
