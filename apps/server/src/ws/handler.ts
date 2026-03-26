@@ -541,11 +541,8 @@ export class MessageHandler {
   };
 
   private handleQueueStatus = (ws: WebSocket) => {
-    // Track this as an instructor connection (for queue updates)
-    if (ws.readyState === WebSocket.OPEN) {
+    if (ws.readyState === WebSocket.OPEN && !this.instructorConnections.has(ws)) {
       this.instructorConnections.add(ws);
-      
-      // Clean up on close
       ws.on('close', () => {
         this.instructorConnections.delete(ws);
         if (this.listener === ws) {

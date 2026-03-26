@@ -65,6 +65,11 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestedWebRTCRef = useRef(false);
 
+  // Anti-screech output filter: intercepts the audio element's output and
+  // applies a bandpass (80 Hz – 4 kHz) so high-frequency feedback never
+  // reaches the room speakers.  Runs on the instructor's device only.
+  const outputCtxRef = useRef<AudioContext | null>(null);
+
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const mountedRef = useRef(true);
@@ -650,6 +655,18 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
 
       if (wasListeningRef.current) {
         console.log('[WS] Reconnected — restoring listening state');
+
+        // Flush stale MSE/audio pipeline so new audio starts at the live edge
+        fallbackModeRef.current = false;
+        providerRef.current?.reinitialize();
+        if (audioRef.current) {
+          audioRef.current.srcObject = null;
+          audioRef.current.pause();
+        }
+        audioSetupRef.current = false;
+        currentStreamRef.current = null;
+        gotTrackForSpeakerRef.current = false;
+
         if (ws.readyState === WebSocket.OPEN) {
           ws.send('LISTEN');
           const fmt = pickPlaybackMime();
@@ -930,9 +947,12 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const listen = useCallback(() => {
     setListening(true);
     wasListeningRef.current = true;
+
+    // Resume the anti-screech AudioContext (may be suspended until user gesture)
+    if (outputCtxRef.current?.state === 'suspended') {
+      outputCtxRef.current.resume().catch(() => {});
+    }
     
-    // Send LISTEN message - peer connection should already be initialized in onopen
-    // But ensure it exists just in case
     setTimeout(() => {
       const ws = wsRef.current;
       if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
@@ -1024,6 +1044,47 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     }
   }, []);
 
+  // Anti-screech output filter: intercepts the <audio> element's output and
+  // routes it through a bandpass (80 Hz high-pass + cascaded 4 kHz low-pass)
+  // so high-frequency feedback screeches never reach the room speakers.
+  // createMediaElementSource can only be called once per element so this
+  // must run exactly once after mount.
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el || outputCtxRef.current) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx: AudioContext = new AudioCtx();
+      const source = ctx.createMediaElementSource(el);
+
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 80;
+      hp.Q.value = 0.707;
+
+      const lp1 = ctx.createBiquadFilter();
+      lp1.type = 'lowpass';
+      lp1.frequency.value = 4000;
+      lp1.Q.value = 0.707;
+
+      const lp2 = ctx.createBiquadFilter();
+      lp2.type = 'lowpass';
+      lp2.frequency.value = 4000;
+      lp2.Q.value = 0.707;
+
+      source.connect(hp);
+      hp.connect(lp1);
+      lp1.connect(lp2);
+      lp2.connect(ctx.destination);
+
+      outputCtxRef.current = ctx;
+      console.log('[AntiScreech] Output filter attached to audio element');
+    } catch (e) {
+      console.warn('[AntiScreech] Failed to set up output filter:', e);
+    }
+  }, []);
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -1034,6 +1095,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
       providerRef.current?.dispose();
       providerRef.current = null;
+      try { outputCtxRef.current?.close(); } catch {}
+      outputCtxRef.current = null;
       try {
         wsRef.current?.close();
       } catch {}

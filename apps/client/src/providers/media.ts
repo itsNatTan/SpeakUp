@@ -45,6 +45,10 @@ export class MediaProvider {
   private KEEP_TAIL_SEC = 2.0;
   // single retry flag for QuotaExceeded
   private pendingRetry = false;
+  // live-edge seeking: if the playback position falls this far behind the
+  // buffer end we snap forward to avoid unbounded latency growth.
+  private MAX_LIVE_LATENCY_SEC = 4.0;
+  private TARGET_LIVE_LATENCY_SEC = 1.0;
 
   constructor(mimeType?: string) {
     this.mimeType = mimeType;
@@ -126,8 +130,8 @@ export class MediaProvider {
     }
     if (!this.sourceBuffer || this.sourceBuffer.updating) return;
     if (!this.queue.length) {
-      // try to (re)start playback once there is enough buffered data
       this.maybeStartPlayback();
+      this.seekToLiveEdgeIfNeeded();
       return;
     }
 
@@ -153,6 +157,18 @@ export class MediaProvider {
       }
       console.error('appendBuffer failed; rebuilding pipeline', e);
       await this.rebuild();
+    }
+  }
+
+  /** If playback fell behind live edge (micro-stalls, tab throttle, reconnect
+   *  gaps), seek forward so latency doesn't grow unboundedly. */
+  private seekToLiveEdgeIfNeeded() {
+    if (!this.attachingEl || !this.startedPlayback) return;
+    const bufEnd = this.bufferedEnd();
+    if (bufEnd === null) return;
+    const lag = bufEnd - this.attachingEl.currentTime;
+    if (lag > this.MAX_LIVE_LATENCY_SEC) {
+      this.attachingEl.currentTime = bufEnd - this.TARGET_LIVE_LATENCY_SEC;
     }
   }
 

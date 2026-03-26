@@ -34,67 +34,6 @@ type SignalingMessage =
   | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
-// --- Anti-screech bandpass filter ---
-// Feedback loops shift higher each cycle until they screech.  A steep low-pass
-// at 4 kHz removes the frequencies where screech builds up while preserving
-// speech intelligibility.  A high-pass at 80 Hz cuts room rumble.
-// No compressor / noise gate — just passive filtering that can't pump or
-// interfere with the browser's built-in echo cancellation.
-
-type FilterHandle = { dispose: () => void };
-
-function applyAntiScreechFilter(rawStream: MediaStream): {
-  processedStream: MediaStream;
-  handle: FilterHandle;
-} | null {
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return null;
-
-    const ctx: AudioContext = new AudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
-
-    const source = ctx.createMediaStreamSource(rawStream);
-
-    const highpass = ctx.createBiquadFilter();
-    highpass.type = 'highpass';
-    highpass.frequency.value = 80;
-    highpass.Q.value = 0.707;
-
-    // Two cascaded low-pass filters → -24 dB/octave rolloff above 4 kHz
-    const lp1 = ctx.createBiquadFilter();
-    lp1.type = 'lowpass';
-    lp1.frequency.value = 4000;
-    lp1.Q.value = 0.707;
-
-    const lp2 = ctx.createBiquadFilter();
-    lp2.type = 'lowpass';
-    lp2.frequency.value = 4000;
-    lp2.Q.value = 0.707;
-
-    const dest = ctx.createMediaStreamDestination();
-
-    source.connect(highpass);
-    highpass.connect(lp1);
-    lp1.connect(lp2);
-    lp2.connect(dest);
-
-    const dispose = () => {
-      try { source.disconnect(); } catch {}
-      try { highpass.disconnect(); } catch {}
-      try { lp1.disconnect(); } catch {}
-      try { lp2.disconnect(); } catch {}
-      try { dest.disconnect(); } catch {}
-      try { ctx.close(); } catch {}
-    };
-
-    return { processedStream: dest.stream, handle: { dispose } };
-  } catch (e) {
-    console.warn('[AntiScreech] Failed, using raw stream:', e);
-    return null;
-  }
-}
-
 const MAX_RECONNECT_ATTEMPTS = 50;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
@@ -127,9 +66,6 @@ export const useWebRTCStreaming = (
   /** Consecutive polls where bytesSent was below threshold (muted/failed mic or broken WebRTC). */
   const lowBytesSentCountRef = useRef(0);
   const lastBytesSentRef = useRef(0);
-
-  const filterRef = useRef<FilterHandle | null>(null);
-  const rawStreamRef = useRef<MediaStream | null>(null);
 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -227,11 +163,6 @@ export const useWebRTCStreaming = (
     pcRef.current?.close();
     pcRef.current = null;
 
-    filterRef.current?.dispose();
-    filterRef.current = null;
-    rawStreamRef.current?.getTracks().forEach(t => t.stop());
-    rawStreamRef.current = null;
-
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     streamFromUserGestureRef.current?.getTracks().forEach(t => t.stop());
@@ -307,16 +238,8 @@ export const useWebRTCStreaming = (
       stream = await navigator.mediaDevices.getUserMedia({ audio: isMobile ? ac : ac });
     }
 
-    filterRef.current?.dispose();
-    filterRef.current = null;
-    rawStreamRef.current?.getTracks().forEach(t => t.stop());
-
-    rawStreamRef.current = stream;
-    const filtered = applyAntiScreechFilter(stream);
-    if (filtered) filterRef.current = filtered.handle;
-    streamRef.current = filtered ? filtered.processedStream : stream;
-
-    startMediaRecorder(streamRef.current);
+    streamRef.current = stream;
+    startMediaRecorder(stream);
     console.log('[WebRTC Streaming] Started with MediaRecorder (default mode)');
   }, [startMediaRecorder]);
 
@@ -356,23 +279,15 @@ export const useWebRTCStreaming = (
         trackIds: stream.getAudioTracks().map(t => t.id),
       });
 
-      filterRef.current?.dispose();
-      filterRef.current = null;
-      rawStreamRef.current?.getTracks().forEach(t => t.stop());
+      streamRef.current = stream;
 
-      rawStreamRef.current = stream;
-      const filtered = applyAntiScreechFilter(stream);
-      const outStream = filtered ? filtered.processedStream : stream;
-      if (filtered) filterRef.current = filtered.handle;
-      streamRef.current = outStream;
-
-      outStream.getAudioTracks().forEach(track => {
+      stream.getAudioTracks().forEach(track => {
         console.log('[WebRTC Streaming] Adding track to peer connection', {
           id: track.id,
           enabled: track.enabled,
           readyState: track.readyState,
         });
-        pcRef.current!.addTrack(track, outStream);
+        pcRef.current!.addTrack(track, stream);
       });
 
       pendingOfferRef.current = true;
