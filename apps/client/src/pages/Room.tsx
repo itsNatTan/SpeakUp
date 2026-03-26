@@ -66,42 +66,42 @@ const Room: React.FC = () => {
       <hr className="w-96 mx-auto" />
 
       <div className="flex flex-col gap-y-4 justify-center items-center h-96">
-        {/* Priority Selector - show when off or waiting */}
-        {(state === 'off' || state === 'waiting') && (
-          <div className="flex flex-col gap-2 items-center">
-            <label className="text-sm font-medium text-gray-700">
-              {state === 'waiting' ? 'Update Urgency Level:' : 'Urgency Level:'}
-            </label>
-            <div className="flex gap-2">
-              {[
-                { value: 0, label: 'Normal', color: 'bg-gray-400' },
-                { value: 1, label: 'Medium', color: 'bg-yellow-400' },
-                { value: 2, label: 'High', color: 'bg-orange-400' },
-                { value: 3, label: 'Urgent', color: 'bg-red-400' },
-              ].map(({ value, label, color }) => (
-                <button
-                  key={value}
-                  onClick={() => {
-                    setPriority(value);
-                    // If waiting, update priority on server
-                    if (state === 'waiting') {
-                      // Update will be sent via useWebRTCStreaming hook
-                    }
-                  }}
-                  className={clsx(
-                    'px-3 py-1 rounded text-sm font-medium transition-all',
-                    priority === value
-                      ? `${color} text-white shadow-md scale-105`
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  )}
-                  title={label}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+        {/* Priority Selector - collapse when speaking instead of removing from
+             DOM so iPhone Safari doesn't leave a ghost of the box-shadow */}
+        <div
+          className={clsx(
+            'flex flex-col gap-2 items-center overflow-hidden transition-all duration-200',
+            state === 'on'
+              ? 'max-h-0 opacity-0 pointer-events-none'
+              : 'max-h-20 opacity-100',
+          )}
+        >
+          <label className="text-sm font-medium text-gray-700">
+            {state === 'waiting' ? 'Update Urgency Level:' : 'Urgency Level:'}
+          </label>
+          <div className="flex gap-2">
+            {[
+              { value: 0, label: 'Normal', color: 'bg-gray-400' },
+              { value: 1, label: 'Medium', color: 'bg-yellow-400' },
+              { value: 2, label: 'High', color: 'bg-orange-400' },
+              { value: 3, label: 'Urgent', color: 'bg-red-400' },
+            ].map(({ value, label, color }) => (
+              <button
+                key={value}
+                onClick={() => setPriority(value)}
+                className={clsx(
+                  'px-3 py-1 rounded text-sm font-medium transition-all',
+                  priority === value
+                    ? `${color} text-white ring-2 ring-offset-2 ring-gray-600`
+                    : 'bg-gray-200 text-gray-700 hover:bg-gray-300',
+                )}
+                title={label}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-        )}
+        </div>
 
         <button
           className={clsx(
