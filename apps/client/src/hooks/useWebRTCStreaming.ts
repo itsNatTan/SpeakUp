@@ -34,77 +34,6 @@ type SignalingMessage =
   | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
-// ---------------------------------------------------------------------------
-// Volume gate: only lets audio through when the mic level exceeds a threshold.
-// Speech directly into a phone mic is typically -30 to -15 dBFS, while speaker
-// playback picked up by the same mic sits around -50 to -40 dBFS.  By gating
-// below ~-35 dBFS we let close-mic speech through but reject room playback,
-// breaking the feedback loop at the source.
-// ---------------------------------------------------------------------------
-const GATE_THRESHOLD_DB = -38;     // dBFS – open gate above this level
-const GATE_HOLD_MS      = 250;     // keep gate open briefly after speech stops
-const GATE_POLL_MS      = 50;      // how often we check the mic level
-
-type VolumeGateHandle = {
-  gatedStream: MediaStream;
-  dispose: () => void;
-};
-
-function applyVolumeGate(rawStream: MediaStream): VolumeGateHandle | null {
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return null;
-
-    const ctx: AudioContext = new AudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
-
-    const source  = ctx.createMediaStreamSource(rawStream);
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 256;
-    const gate    = ctx.createGain();
-    gate.gain.value = 0;            // start closed
-    const dest    = ctx.createMediaStreamDestination();
-
-    source.connect(analyser);
-    source.connect(gate);
-    gate.connect(dest);
-
-    const buf = new Float32Array(analyser.fftSize);
-    let holdUntil = 0;
-
-    const iv = setInterval(() => {
-      analyser.getFloatTimeDomainData(buf);
-      let sumSq = 0;
-      for (let i = 0; i < buf.length; i++) sumSq += buf[i] * buf[i];
-      const rmsDb = 10 * Math.log10(sumSq / buf.length + 1e-10);
-
-      const now = performance.now();
-      if (rmsDb > GATE_THRESHOLD_DB) {
-        holdUntil = now + GATE_HOLD_MS;
-      }
-
-      const shouldOpen = now < holdUntil;
-      const target = shouldOpen ? 1 : 0;
-      // Smooth 20 ms ramp to avoid clicks
-      gate.gain.linearRampToValueAtTime(target, ctx.currentTime + 0.02);
-    }, GATE_POLL_MS);
-
-    const dispose = () => {
-      clearInterval(iv);
-      try { source.disconnect(); } catch {}
-      try { analyser.disconnect(); } catch {}
-      try { gate.disconnect(); } catch {}
-      try { dest.disconnect(); } catch {}
-      try { ctx.close(); } catch {}
-    };
-
-    return { gatedStream: dest.stream, dispose };
-  } catch (e) {
-    console.warn('[VolumeGate] Failed, using raw stream:', e);
-    return null;
-  }
-}
-
 const MAX_RECONNECT_ATTEMPTS = 50;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
@@ -134,7 +63,6 @@ export const useWebRTCStreaming = (
   const recMimeRef = useRef<string | undefined>(undefined);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const fallbackModeRef = useRef(false);
-  const volumeGateRef = useRef<VolumeGateHandle | null>(null);
   /** Consecutive polls where bytesSent was below threshold (muted/failed mic or broken WebRTC). */
   const lowBytesSentCountRef = useRef(0);
   const lastBytesSentRef = useRef(0);
@@ -232,8 +160,6 @@ export const useWebRTCStreaming = (
     lowBytesSentCountRef.current = 0;
     lastBytesSentRef.current = 0;
 
-    volumeGateRef.current?.dispose();
-    volumeGateRef.current = null;
 
     pcRef.current?.close();
     pcRef.current = null;
@@ -271,9 +197,8 @@ export const useWebRTCStreaming = (
 
   const fallbackToMediaRecorder = useCallback(() => {
     if (fallbackModeRef.current || !streamRef.current) return;
-    const outStream = volumeGateRef.current?.gatedStream ?? streamRef.current;
-    startMediaRecorder(outStream);
-    console.log('[WebRTC Streaming] Switched to MediaRecorder (volume-gated)');
+    startMediaRecorder(streamRef.current);
+    console.log('[WebRTC Streaming] Switched to MediaRecorder');
   }, [startMediaRecorder]);
 
   const stopMediaRecorderAndUseWebRTC = useCallback(async () => {
@@ -298,12 +223,11 @@ export const useWebRTCStreaming = (
       pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') pc.close(); };
       pc.oniceconnectionstatechange = () => { if (pc.iceConnectionState === 'failed') pc.close(); };
     }
-    const outStream = volumeGateRef.current?.gatedStream ?? stream;
-    pcRef.current!.addTrack(outStream.getAudioTracks()[0], outStream);
+    pcRef.current!.addTrack(stream.getAudioTracks()[0], stream);
     const offer = await pcRef.current!.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false });
     await pcRef.current!.setLocalDescription(offer);
     send({ type: 'offer', sdp: offer });
-    console.log('[WebRTC Streaming] Swapped to WebRTC (created new connection, volume-gated)');
+    console.log('[WebRTC Streaming] Swapped to WebRTC (created new connection)');
   }, [send, rtcConfig]);
 
   const startWithMediaRecorderOnly = useCallback(async () => {
@@ -316,15 +240,8 @@ export const useWebRTCStreaming = (
     }
 
     streamRef.current = stream;
-
-    // Apply volume gate so only close-mic speech gets transmitted
-    volumeGateRef.current?.dispose();
-    const gate = applyVolumeGate(stream);
-    volumeGateRef.current = gate;
-    const outStream = gate?.gatedStream ?? stream;
-
-    startMediaRecorder(outStream);
-    console.log('[WebRTC Streaming] Started with MediaRecorder (default mode, volume-gated)');
+    startMediaRecorder(stream);
+    console.log('[WebRTC Streaming] Started with MediaRecorder (default mode)');
   }, [startMediaRecorder]);
 
   const createOffer = useCallback(async () => {
@@ -365,19 +282,13 @@ export const useWebRTCStreaming = (
 
       streamRef.current = stream;
 
-      // Apply volume gate so only close-mic speech gets transmitted
-      volumeGateRef.current?.dispose();
-      const gate = applyVolumeGate(stream);
-      volumeGateRef.current = gate;
-      const outStream = gate?.gatedStream ?? stream;
-
-      outStream.getAudioTracks().forEach(track => {
+      stream.getAudioTracks().forEach(track => {
         console.log('[WebRTC Streaming] Adding track to peer connection', {
           id: track.id,
           enabled: track.enabled,
           readyState: track.readyState,
         });
-        pcRef.current!.addTrack(track, outStream);
+        pcRef.current!.addTrack(track, stream);
       });
 
       pendingOfferRef.current = true;
