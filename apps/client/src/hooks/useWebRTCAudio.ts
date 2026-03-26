@@ -65,10 +65,15 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestedWebRTCRef = useRef(false);
 
-  // Anti-screech output filter: intercepts the audio element's output and
-  // applies a bandpass (80 Hz – 4 kHz) so high-frequency feedback never
-  // reaches the room speakers.  Runs on the instructor's device only.
+  // Anti-screech output filter: filters incoming WebRTC streams through a
+  // bandpass (80 Hz – 4 kHz) before they reach the room speakers.
+  // We route via createMediaStreamSource → filters → MediaStreamDestination
+  // so the audio element receives an already-filtered MediaStream.
+  // (createMediaElementSource doesn't reliably capture srcObject/WebRTC audio.)
   const outputCtxRef = useRef<AudioContext | null>(null);
+  const filterInputRef = useRef<BiquadFilterNode | null>(null);
+  const filteredStreamRef = useRef<MediaStream | null>(null);
+  const webrtcSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -219,7 +224,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     }, 5000);
     if (!el || !currentStreamRef.current) return;
     providerRef.current?.reinitialize();
-    el.srcObject = currentStreamRef.current;
+    el.srcObject = filteredStreamRef.current || currentStreamRef.current;
     el.play().catch(() => {});
     requestedWebRTCRef.current = false;
     if (requestedWebRTCTimerRef.current) {
@@ -299,25 +304,34 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         
         currentStreamRef.current = stream;
         audioSetupRef.current = true;
-        
-        // Configure audio element for mobile compatibility
-        // DO NOT call load() for MediaStream sources!
-        // Android Chrome needs special handling
-        // For Android, we need to be more careful about stream replacement
+
+        // Route the incoming WebRTC stream through the anti-screech filter
+        // chain so high-frequency feedback never reaches the room speakers.
+        const ctx = outputCtxRef.current;
+        const filterIn = filterInputRef.current;
+        const filteredStream = filteredStreamRef.current;
+        let streamForElement: MediaStream = stream;
+
+        if (ctx && filterIn && filteredStream) {
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+          if (webrtcSourceRef.current) {
+            try { webrtcSourceRef.current.disconnect(); } catch {}
+          }
+          const src = ctx.createMediaStreamSource(stream);
+          src.connect(filterIn);
+          webrtcSourceRef.current = src;
+          streamForElement = filteredStream;
+          console.log('[AntiScreech] WebRTC stream connected to filter chain');
+        }
+
         if (deviceInfo.isAndroid && audioElement.srcObject) {
-          // Android: Clear existing stream first to avoid conflicts
           audioElement.srcObject = null;
-          // Small delay for Android to process the change
+          const s = streamForElement;
           setTimeout(() => {
-            if (audioElement && stream) {
-              audioElement.srcObject = stream;
-            }
+            if (audioElement) audioElement.srcObject = s;
           }, 50);
         } else {
-          // iOS/Desktop: Direct assignment works fine
-          if (audioElement.srcObject !== stream) {
-            audioElement.srcObject = stream;
-          }
+          audioElement.srcObject = streamForElement;
         }
         
         audioElement.preload = 'auto';
@@ -1044,19 +1058,15 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     }
   }, []);
 
-  // Anti-screech output filter: intercepts the <audio> element's output and
-  // routes it through a bandpass (80 Hz high-pass + cascaded 4 kHz low-pass)
-  // so high-frequency feedback screeches never reach the room speakers.
-  // createMediaElementSource can only be called once per element so this
-  // must run exactly once after mount.
+  // Anti-screech filter chain: hp (80 Hz) → lp1 (4 kHz) → lp2 (4 kHz) → dest.
+  // WebRTC streams are connected to filterInputRef in ontrack; the filtered
+  // output (filteredStreamRef) is what gets set on the audio element.
   useEffect(() => {
-    const el = audioRef.current;
-    if (!el || outputCtxRef.current) return;
+    if (outputCtxRef.current) return;
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const ctx: AudioContext = new AudioCtx();
-      const source = ctx.createMediaElementSource(el);
 
       const hp = ctx.createBiquadFilter();
       hp.type = 'highpass';
@@ -1073,15 +1083,18 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       lp2.frequency.value = 4000;
       lp2.Q.value = 0.707;
 
-      source.connect(hp);
+      const dest = ctx.createMediaStreamDestination();
+
       hp.connect(lp1);
       lp1.connect(lp2);
-      lp2.connect(ctx.destination);
+      lp2.connect(dest);
 
       outputCtxRef.current = ctx;
-      console.log('[AntiScreech] Output filter attached to audio element');
+      filterInputRef.current = hp;
+      filteredStreamRef.current = dest.stream;
+      console.log('[AntiScreech] Filter chain ready (waiting for WebRTC streams)');
     } catch (e) {
-      console.warn('[AntiScreech] Failed to set up output filter:', e);
+      console.warn('[AntiScreech] Failed to set up filter chain:', e);
     }
   }, []);
 
@@ -1095,6 +1108,10 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
       providerRef.current?.dispose();
       providerRef.current = null;
+      try { webrtcSourceRef.current?.disconnect(); } catch {}
+      webrtcSourceRef.current = null;
+      filterInputRef.current = null;
+      filteredStreamRef.current = null;
       try { outputCtxRef.current?.close(); } catch {}
       outputCtxRef.current = null;
       try {
