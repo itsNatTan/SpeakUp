@@ -1077,7 +1077,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       if (!AudioCtx) return;
       const ctx: AudioContext = new AudioCtx();
 
-      // --- helper: build a highpass(80) → lowpass(4k) × 3 chain ---
+      // --- helper: build a highpass(80) → lowpass(3k) × 3 chain ---
       const buildChain = () => {
         const hp = ctx.createBiquadFilter();
         hp.type = 'highpass';
@@ -1087,7 +1087,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         const lps = [0, 1, 2].map(() => {
           const lp = ctx.createBiquadFilter();
           lp.type = 'lowpass';
-          lp.frequency.value = 4000;
+          lp.frequency.value = 3000;
           lp.Q.value = 0.707;
           return lp;
         });
