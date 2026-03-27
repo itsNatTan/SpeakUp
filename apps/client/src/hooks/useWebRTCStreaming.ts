@@ -36,7 +36,7 @@ type SignalingMessage =
 
 // Reduce mic sensitivity to weaken feedback loops. 0.5 = −6 dB; close-mic
 // speech stays intelligible while room speaker bleed is halved each round-trip.
-const MIC_GAIN = 0.5;
+const MIC_GAIN = 0.1;
 
 type GainHandle = { stream: MediaStream; dispose: () => void };
 
