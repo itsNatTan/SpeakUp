@@ -724,7 +724,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
         } else if (data.type === 'from') {
           setPlaying(data.name || 'Speaker');
-          if (!FORCE_MEDIA_RECORDER) {
+          if (FORCE_MEDIA_RECORDER) {
+            providerRef.current?.reinitialize();
+          } else {
             gotTrackForSpeakerRef.current = false;
             if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = setTimeout(() => {
@@ -827,7 +829,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           }
         } else if (message.startsWith('FROM')) {
           setPlaying(message.slice(4));
-          if (!FORCE_MEDIA_RECORDER) {
+          if (FORCE_MEDIA_RECORDER) {
+            providerRef.current?.reinitialize();
+          } else {
             gotTrackForSpeakerRef.current = false;
             if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = setTimeout(() => {

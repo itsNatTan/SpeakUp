@@ -24,29 +24,25 @@ function pickPlaybackMime(): string | undefined {
 
   for (const t of primary) if (MS.isTypeSupported(t)) return t;
   for (const t of secondary) if (MS.isTypeSupported(t)) return t;
-  return undefined; // let the browser/provider try default
+  return undefined;
 }
 
 export class MediaProvider {
   private mediaSource: MediaSource | null = null;
-  private sourceBuffer!: SourceBuffer;
+  private sourceBuffer: SourceBuffer | null = null;
   private _sourceUrl: string | null = null;
-  private mimeType?: string; // now optional
+  private mimeType?: string;
   private queue: AppendItem[] = [];
   private attachingEl: HTMLMediaElement | null = null;
   private sourceOpenResolve!: () => void;
   private sourceOpenPromise: Promise<void>;
   private startedPlayback = false;
   private destroyed = false;
+  private rebuilding = false;
 
-  // mobile-friendly prebuffer target (tune 0.1–0.6s)
   private PREBUFFER_SEC = 0.2;
-  // keep ~2s before currentTime to allow small seeks/gaps when evicting
   private KEEP_TAIL_SEC = 2.0;
-  // single retry flag for QuotaExceeded
   private pendingRetry = false;
-  // live-edge seeking: if the playback position falls this far behind the
-  // buffer end we snap forward to avoid unbounded latency growth.
   private MAX_LIVE_LATENCY_SEC = 4.0;
   private TARGET_LIVE_LATENCY_SEC = 1.0;
 
@@ -56,59 +52,53 @@ export class MediaProvider {
       throw new Error('MediaSource not supported in this browser.');
     }
 
-    // If a mime is provided but not actually supported, fall back gracefully.
     const MS = (window as any).MediaSource;
     if (this.mimeType && typeof MS.isTypeSupported === 'function' && !MS.isTypeSupported(this.mimeType)) {
-      // Try to self-pick a working type instead of throwing (Safari 16 edge cases).
       this.mimeType = pickPlaybackMime();
     }
     if (!this.mimeType) {
-      // Last resort: attempt auto-pick; if still undefined, we’ll ask MSE to decide.
       this.mimeType = pickPlaybackMime();
     }
 
+    this.sourceOpenPromise = new Promise<void>((res) => (this.sourceOpenResolve = res));
+    this.initMediaSource();
+  }
+
+  private initMediaSource() {
     this.mediaSource = new MediaSource();
+    this.sourceBuffer = null;
     this.sourceOpenPromise = new Promise<void>((res) => (this.sourceOpenResolve = res));
 
     this.mediaSource.addEventListener('sourceopen', () => {
       if (!this.mediaSource) return;
       try {
-        // If mimeType is undefined, let MSE try default audio SourceBuffer (rare but can work).
         this.sourceBuffer = this.mimeType
           ? this.mediaSource.addSourceBuffer(this.mimeType)
-          : this.mediaSource.addSourceBuffer('audio/mp4'); // nudge toward the most broadly mobile-safe default
+          : this.mediaSource.addSourceBuffer('audio/mp4');
       } catch (e) {
-        // As a last fallback, attempt the other family once.
         try {
           const alt = this.mimeType?.includes('mp4') ? 'audio/webm; codecs="opus"' : 'audio/mp4; codecs="mp4a.40.2"';
           this.sourceBuffer = this.mediaSource.addSourceBuffer(alt);
           this.mimeType = alt;
-          // console.warn('addSourceBuffer fallback to', alt, e);
         } catch (e2) {
-          console.error('addSourceBuffer failed', e2);
+          console.error('[MediaProvider] addSourceBuffer failed', e2);
           return;
         }
       }
       this.sourceBuffer.addEventListener('updateend', () => this.flush());
-      // Some browsers fire 'error' on SourceBuffer; catch and rebuild if so.
-      (this.sourceBuffer as any).addEventListener?.('error', () => this.rebuild());
       this.sourceOpenResolve();
-      // kick a first flush if anything was queued before sourceopen
       this.flush();
     });
   }
 
-  /** Attach once to an <audio> element. Do not change src after this. */
   public attach(audioEl: HTMLMediaElement) {
-    if (this._sourceUrl) return; // already attached
+    if (this._sourceUrl) return;
     if (!this.mediaSource) throw new Error('No MediaSource');
     this.attachingEl = audioEl;
     this._sourceUrl = URL.createObjectURL(this.mediaSource);
     audioEl.src = this._sourceUrl;
-    // iOS inline playback hint (harmless elsewhere)
     (audioEl as any).playsInline = true;
 
-    // Mobile: resume when tab becomes visible again
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && audioEl.paused && !audioEl.error) {
         audioEl.play().catch(() => {});
@@ -116,7 +106,6 @@ export class MediaProvider {
     });
   }
 
-  /** Append a chunk (e.g., from WebSocket). Safe to call from anywhere. */
   public async buffer(data: ArrayBuffer) {
     if (this.destroyed) return;
     this.queue.push(data);
@@ -124,20 +113,23 @@ export class MediaProvider {
   }
 
   private async flush(): Promise<void> {
-    if (this.destroyed) return;
-    if (!this.mediaSource || this.mediaSource.readyState !== 'open') {
+    if (this.destroyed || this.rebuilding) return;
+
+    // Wait for MediaSource to be ready
+    if (!this.sourceBuffer || !this.mediaSource || this.mediaSource.readyState !== 'open') {
       await this.sourceOpenPromise;
     }
-    if (!this.sourceBuffer || this.sourceBuffer.updating) return;
+    // Re-check after await — rebuild may have happened
+    if (this.destroyed || this.rebuilding || !this.sourceBuffer) return;
+    if (this.sourceBuffer.updating) return;
+
     if (!this.queue.length) {
       this.maybeStartPlayback();
       this.seekToLiveEdgeIfNeeded();
       return;
     }
 
-    // Guard: if audio element errored, rebuild cleanly
     if (this.attachingEl?.error || this.mediaSource?.readyState === 'ended') {
-      // console.warn('Audio element/MS errored/ended; rebuilding pipeline.');
       await this.rebuild();
       return;
     }
@@ -145,23 +137,20 @@ export class MediaProvider {
     try {
       const chunk = this.queue.shift()!;
       this.sourceBuffer.appendBuffer(chunk);
-      this.pendingRetry = false; // successful append clears quota retry guard
+      this.pendingRetry = false;
     } catch (e: any) {
       if (e && (e.name === 'QuotaExceededError' || e.name === 'QuotaExceeded')) {
-        // Evict old data and retry once
         if (!this.pendingRetry) {
           this.pendingRetry = true;
           await this.evictOld();
-          return this.flush(); // retry once
+          return this.flush();
         }
       }
-      console.error('appendBuffer failed; rebuilding pipeline', e);
+      console.error('[MediaProvider] appendBuffer failed, rebuilding', e);
       await this.rebuild();
     }
   }
 
-  /** If playback fell behind live edge (micro-stalls, tab throttle, reconnect
-   *  gaps), seek forward so latency doesn't grow unboundedly. */
   private seekToLiveEdgeIfNeeded() {
     if (!this.attachingEl || !this.startedPlayback) return;
     const bufEnd = this.bufferedEnd();
@@ -175,17 +164,13 @@ export class MediaProvider {
   private maybeStartPlayback() {
     if (!this.attachingEl || this.startedPlayback) return;
     const a = this.attachingEl;
-
-    // Ensure we have a small buffer floor before starting on mobile
     const bufEnd = this.bufferedEnd();
     if (bufEnd === null) return;
-
     const bufferedAhead = bufEnd - (a.currentTime || 0);
     if (bufferedAhead < this.PREBUFFER_SEC) return;
 
     this.startedPlayback = true;
     a.play().catch(() => {
-      // If it rejects due to gesture policy, we’ll try again next flush after user action.
       this.startedPlayback = false;
     });
   }
@@ -212,7 +197,6 @@ export class MediaProvider {
     }
   }
 
-  /** Trim old data to free space; keep a small tail behind currentTime. */
   private async evictOld() {
     if (!this.sourceBuffer || this.sourceBuffer.updating || !this.attachingEl) return;
     const a = this.attachingEl;
@@ -226,75 +210,57 @@ export class MediaProvider {
       this.sourceBuffer.remove(0, safeRemoveEnd);
       await new Promise<void>((res) => {
         const done = () => {
-          this.sourceBuffer.removeEventListener('updateend', done);
+          this.sourceBuffer?.removeEventListener('updateend', done);
           res();
         };
-        this.sourceBuffer.addEventListener('updateend', done, { once: true });
+        this.sourceBuffer?.addEventListener('updateend', done, { once: true });
       });
     } catch {}
   }
 
-  /** Clean, mobile-safe rebuild (use when element errors or MSE goes bad). */
+  /** Tear down the current MSE pipeline and build a fresh one.
+   *  Safe to call at any time — blocks concurrent flushes via `rebuilding` flag
+   *  and never revokes blob URLs (prevents ERR_FILE_NOT_FOUND). */
   private async rebuild() {
-    if (this.destroyed) return;
+    if (this.destroyed || this.rebuilding) return;
+    this.rebuilding = true;
 
-    // Don't revoke the old blob URL — the browser may still be loading it and
-    // revoking triggers ERR_FILE_NOT_FOUND.  The GC will collect it once the
-    // element's src is overwritten with the new URL below.
+    // Invalidate old sourceBuffer immediately so no stale reference is used
+    this.sourceBuffer = null;
 
-    // Create a fresh pipeline
-    this.mediaSource = new MediaSource();
-    this.sourceOpenPromise = new Promise<void>((res) => (this.sourceOpenResolve = res));
-    this.mediaSource.addEventListener('sourceopen', () => {
-      try {
-        this.sourceBuffer = this.mimeType
-          ? this.mediaSource!.addSourceBuffer(this.mimeType)
-          : this.mediaSource!.addSourceBuffer('audio/mp4');
-      } catch (e) {
-        try {
-          const alt = this.mimeType?.includes('mp4') ? 'audio/webm; codecs="opus"' : 'audio/mp4; codecs="mp4a.40.2"';
-          this.sourceBuffer = this.mediaSource!.addSourceBuffer(alt);
-          this.mimeType = alt;
-        } catch (e2) {
-          console.error('addSourceBuffer failed after rebuild', e2);
-          return;
-        }
-      }
-      this.sourceBuffer.addEventListener('updateend', () => this.flush());
-      (this.sourceBuffer as any).addEventListener?.('error', () => this.rebuild());
-      this.sourceOpenResolve();
-      this.flush();
-    });
+    // Don't revoke the old blob URL — the browser may still be loading it.
+    // GC will collect it once the element's src is overwritten below.
 
-    // Reattach to the same element without calling load()
-    if (this.attachingEl) {
+    this.initMediaSource();
+
+    if (this.attachingEl && this.mediaSource) {
       this._sourceUrl = URL.createObjectURL(this.mediaSource);
       this.attachingEl.src = this._sourceUrl;
       (this.attachingEl as any).playsInline = true;
-      this.startedPlayback = false; // we’ll restart once prebuffered
+      this.startedPlayback = false;
       this.pendingRetry = false;
     }
+
+    // Wait for the new pipeline to be ready before unblocking flushes
+    await this.sourceOpenPromise;
+    this.rebuilding = false;
+    // Kick flush for any data that queued during rebuild
+    this.flush();
   }
 
-  /** Dispose everything when the session ends. */
   public dispose() {
     this.destroyed = true;
-    try {
-      if (this.mediaSource && this.mediaSource.readyState === 'open' && this.sourceBuffer && !this.sourceBuffer.updating) {
-        // optional: this.mediaSource.endOfStream();
-      }
-    } catch {}
     if (this._sourceUrl) {
       try { URL.revokeObjectURL(this._sourceUrl); } catch {}
     }
     this.queue = [];
     this.attachingEl = null;
     this.mediaSource = null;
+    this.sourceBuffer = null;
   }
 
-  /** For completeness, but avoid calling mid-session on mobile. */
   public async reinitialize() {
-    // Instead of remove()/changeType() (which creates gaps), just rebuild.
+    this.queue = [];
     await this.rebuild();
   }
 }
