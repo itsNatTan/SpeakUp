@@ -105,6 +105,8 @@ export const useWebRTCStreaming = (
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const fallbackModeRef = useRef(false);
   const micGainRef = useRef<GainHandle | null>(null);
+  const recorderChunksRef = useRef<Blob[]>([]);
+  const sendFullBlobOnStopRef = useRef(false);
 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -195,6 +197,8 @@ export const useWebRTCStreaming = (
       mediaRecorderRef.current.stop();
       mediaRecorderRef.current = null;
     }
+    recorderChunksRef.current = [];
+    sendFullBlobOnStopRef.current = false;
     fallbackModeRef.current = false;
 
     micGainRef.current?.dispose();
@@ -217,7 +221,7 @@ export const useWebRTCStreaming = (
     }
   }, []);
 
-  const startMediaRecorder = useCallback((stream: MediaStream) => {
+  const startMediaRecorder = useCallback((stream: MediaStream, sendFullBlobOnStop: boolean = false) => {
     if (fallbackModeRef.current || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     const mime = pickRecorderMime(recMimeRef.current);
     let recorder: MediaRecorder;
@@ -226,10 +230,35 @@ export const useWebRTCStreaming = (
     } catch {
       recorder = new MediaRecorder(stream);
     }
+    recorderChunksRef.current = [];
+    sendFullBlobOnStopRef.current = sendFullBlobOnStop;
     recorder.ondataavailable = (e: BlobEvent) => {
-      if (e.data?.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(e.data);
+      if (!e.data || e.data.size === 0) return;
+      if (sendFullBlobOnStopRef.current) {
+        recorderChunksRef.current.push(e.data);
+        return;
+      }
+      if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(e.data);
     };
-    recorder.start(250);
+    recorder.onstop = () => {
+      if (!sendFullBlobOnStopRef.current) {
+        recorderChunksRef.current = [];
+        return;
+      }
+      const chunks = recorderChunksRef.current;
+      recorderChunksRef.current = [];
+      if (!chunks.length) return;
+      const type = recorder.mimeType || mime || 'audio/webm';
+      const fullBlob = new Blob(chunks, { type });
+      if (fullBlob.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(fullBlob);
+      }
+    };
+    if (sendFullBlobOnStopRef.current) {
+      recorder.start();
+    } else {
+      recorder.start(250);
+    }
     mediaRecorderRef.current = recorder;
     fallbackModeRef.current = true;
   }, []);
@@ -287,7 +316,7 @@ export const useWebRTCStreaming = (
     micGainRef.current?.dispose();
     const gh = await applyMicGain(stream);
     micGainRef.current = gh;
-    startMediaRecorder(gh?.stream ?? stream);
+    startMediaRecorder(gh?.stream ?? stream, false);
     console.log('[Streaming] Started with MediaRecorder (default mode)');
   }, [audioConfig, startMediaRecorder]);
 
@@ -349,6 +378,8 @@ export const useWebRTCStreaming = (
         mediaRecorderRef.current.stop();
         mediaRecorderRef.current = null;
       }
+      recorderChunksRef.current = [];
+      sendFullBlobOnStopRef.current = false;
       fallbackModeRef.current = false;
       pcRef.current?.close();
       pcRef.current = null;
@@ -391,7 +422,28 @@ export const useWebRTCStreaming = (
           setState('on');
 
           try {
-            await startWithMediaRecorderOnly();
+            const prerecordMode = data.audioPipeline === 'prerecord';
+            if (prerecordMode) {
+              let stream: MediaStream | null = streamFromUserGestureRef.current;
+              streamFromUserGestureRef.current = null;
+              if (!stream) {
+                stream = await navigator.mediaDevices.getUserMedia({
+                  audio: {
+                    echoCancellation: audioConfig?.echoCancellation ?? true,
+                    noiseSuppression: audioConfig?.noiseSuppression ?? true,
+                    autoGainControl: audioConfig?.autoGainControl ?? true,
+                  },
+                });
+              }
+              streamRef.current = stream;
+              micGainRef.current?.dispose();
+              const gh = await applyMicGain(stream);
+              micGainRef.current = gh;
+              startMediaRecorder(gh?.stream ?? stream, true);
+              console.log('[Streaming] Started prerecord capture (send full blob on stop)');
+            } else {
+              await startWithMediaRecorderOnly();
+            }
           } catch (err) {
             console.error('[WebRTC Streaming] startWithMediaRecorderOnly failed:', err);
             cleanup();

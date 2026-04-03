@@ -237,6 +237,7 @@ export class MessageHandler {
           type: 'cts',
           recMime: this.preferredPlaybackMime ?? undefined,
           defaultMode: 'mediarecorder',
+          audioPipeline: 'prerecord',
         }),
       );
     } catch {}
@@ -1238,6 +1239,7 @@ export class MessageHandler {
         type: 'cts',
         recMime: this.preferredPlaybackMime ?? undefined,
         defaultMode: this.defaultAudioMode,
+        audioPipeline: this.audioPipelineMode,
       }));
     } catch {}
     
