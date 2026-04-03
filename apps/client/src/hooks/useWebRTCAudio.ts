@@ -674,14 +674,16 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         console.log('[WS] Reconnected — restoring listening state');
 
         // Flush stale MSE/audio pipeline so new audio starts at the live edge
-        if (!FORCE_MEDIA_RECORDER) fallbackModeRef.current = false;
         providerRef.current?.reinitialize();
-        if (audioRef.current) {
-          audioRef.current.srcObject = null;
-          audioRef.current.pause();
+        if (!FORCE_MEDIA_RECORDER) {
+          fallbackModeRef.current = false;
+          if (audioRef.current) {
+            audioRef.current.srcObject = null;
+            audioRef.current.pause();
+          }
+          audioSetupRef.current = false;
+          currentStreamRef.current = null;
         }
-        audioSetupRef.current = false;
-        currentStreamRef.current = null;
         gotTrackForSpeakerRef.current = false;
 
         if (ws.readyState === WebSocket.OPEN) {
@@ -742,35 +744,38 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         } else if (data.type === 'force-webrtc' && !FORCE_MEDIA_RECORDER) {
           switchBackToWebRTC();
         } else if (data.type === 'clear') {
-          if (!FORCE_MEDIA_RECORDER) setAudioMode('webrtc');
           console.log('[Audio] Received clear message - resetting audio pipeline');
           setPlaying(null);
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
           }
-          if (!FORCE_MEDIA_RECORDER) fallbackModeRef.current = false;
-          providerRef.current?.reinitialize();
-          if (audioRef.current) {
-            audioRef.current.srcObject = null;
-            audioRef.current.pause();
-            try {
-              audioRef.current.load();
-            } catch (e) {
-              // load() may fail for MediaStream sources, that's okay
+          if (FORCE_MEDIA_RECORDER) {
+            providerRef.current?.reinitialize();
+          } else {
+            setAudioMode('webrtc');
+            fallbackModeRef.current = false;
+            providerRef.current?.reinitialize();
+            if (audioRef.current) {
+              audioRef.current.srcObject = null;
+              audioRef.current.pause();
+              try {
+                audioRef.current.load();
+              } catch (e) {
+                // load() may fail for MediaStream sources, that's okay
+              }
             }
-          }
-          audioSetupRef.current = false;
-          currentStreamRef.current = null;
-          
-          if (!FORCE_MEDIA_RECORDER && pcRef.current) {
-            const connState = pcRef.current.connectionState;
-            const sigState = pcRef.current.signalingState;
-            if (connState === 'failed' || connState === 'disconnected' || 
-                (sigState !== 'stable' && sigState !== 'have-local-offer')) {
-              console.log('[WebRTC] Clearing bad connection state, will recreate on next offer');
-              pcRef.current.close();
-              pcRef.current = null;
+            audioSetupRef.current = false;
+            currentStreamRef.current = null;
+            if (pcRef.current) {
+              const connState = pcRef.current.connectionState;
+              const sigState = pcRef.current.signalingState;
+              if (connState === 'failed' || connState === 'disconnected' || 
+                  (sigState !== 'stable' && sigState !== 'have-local-offer')) {
+                console.log('[WebRTC] Clearing bad connection state, will recreate on next offer');
+                pcRef.current.close();
+                pcRef.current = null;
+              }
             }
           }
         }
@@ -786,35 +791,38 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         }
 
         if (message === 'CLEAR' || message === 'STOP') {
-          if (!FORCE_MEDIA_RECORDER) setAudioMode('webrtc');
           console.log('[Audio] Received clear/stop message:', message);
           setPlaying(null);
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
           }
-          if (!FORCE_MEDIA_RECORDER) fallbackModeRef.current = false;
-          providerRef.current?.reinitialize();
-          if (audioRef.current) {
-            audioRef.current.srcObject = null;
-            audioRef.current.pause();
-            try {
-              audioRef.current.load();
-            } catch (e) {
-              // load() may fail for MediaStream sources, that's okay
+          if (FORCE_MEDIA_RECORDER) {
+            providerRef.current?.reinitialize();
+          } else {
+            setAudioMode('webrtc');
+            fallbackModeRef.current = false;
+            providerRef.current?.reinitialize();
+            if (audioRef.current) {
+              audioRef.current.srcObject = null;
+              audioRef.current.pause();
+              try {
+                audioRef.current.load();
+              } catch (e) {
+                // load() may fail for MediaStream sources, that's okay
+              }
             }
-          }
-          audioSetupRef.current = false;
-          currentStreamRef.current = null;
-          
-          if (!FORCE_MEDIA_RECORDER && pcRef.current) {
-            const connState = pcRef.current.connectionState;
-            const sigState = pcRef.current.signalingState;
-            if (connState === 'failed' || connState === 'disconnected' || 
-                (sigState !== 'stable' && sigState !== 'have-local-offer')) {
-              console.log('[WebRTC] Clearing bad connection state, will recreate on next offer');
-              pcRef.current.close();
-              pcRef.current = null;
+            audioSetupRef.current = false;
+            currentStreamRef.current = null;
+            if (pcRef.current) {
+              const connState = pcRef.current.connectionState;
+              const sigState = pcRef.current.signalingState;
+              if (connState === 'failed' || connState === 'disconnected' || 
+                  (sigState !== 'stable' && sigState !== 'have-local-offer')) {
+                console.log('[WebRTC] Clearing bad connection state, will recreate on next offer');
+                pcRef.current.close();
+                pcRef.current = null;
+              }
             }
           }
         } else if (message.startsWith('FROM')) {
