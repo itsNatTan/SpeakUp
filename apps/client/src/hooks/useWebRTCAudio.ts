@@ -69,7 +69,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestedWebRTCRef = useRef(false);
 
-  // Anti-screech output filter for WebRTC streams: bandpass (80 Hz – 5 kHz)
+  // Anti-screech output filter for WebRTC streams: bandpass (80 Hz – 3 kHz)
   // via createMediaStreamSource → filters → MediaStreamDestination.
   // The filtered stream is set on the <audio> element's srcObject so the
   // element only plays filtered audio for WebRTC paths.
@@ -674,7 +674,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         console.log('[WS] Reconnected — restoring listening state');
 
         // Flush stale MSE/audio pipeline so new audio starts at the live edge
-        fallbackModeRef.current = false;
+        if (!FORCE_MEDIA_RECORDER) fallbackModeRef.current = false;
         providerRef.current?.reinitialize();
         if (audioRef.current) {
           audioRef.current.srcObject = null;
@@ -742,20 +742,18 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         } else if (data.type === 'force-webrtc' && !FORCE_MEDIA_RECORDER) {
           switchBackToWebRTC();
         } else if (data.type === 'clear') {
-          setAudioMode('webrtc');
-          console.log('[WebRTC] Received clear message - resetting audio pipeline');
+          if (!FORCE_MEDIA_RECORDER) setAudioMode('webrtc');
+          console.log('[Audio] Received clear message - resetting audio pipeline');
           setPlaying(null);
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
           }
-          fallbackModeRef.current = false;
+          if (!FORCE_MEDIA_RECORDER) fallbackModeRef.current = false;
           providerRef.current?.reinitialize();
-          // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;
             audioRef.current.pause();
-            // Force reload for mobile browsers
             try {
               audioRef.current.load();
             } catch (e) {
@@ -765,9 +763,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           audioSetupRef.current = false;
           currentStreamRef.current = null;
           
-          // If peer connection is in a bad state, close and recreate it
-          // This ensures the pipeline is ready for the next speaker
-          if (pcRef.current) {
+          if (!FORCE_MEDIA_RECORDER && pcRef.current) {
             const connState = pcRef.current.connectionState;
             const sigState = pcRef.current.signalingState;
             if (connState === 'failed' || connState === 'disconnected' || 
@@ -790,20 +786,18 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         }
 
         if (message === 'CLEAR' || message === 'STOP') {
-          setAudioMode('webrtc');
-          console.log('[WebRTC] Received clear/stop message:', message);
+          if (!FORCE_MEDIA_RECORDER) setAudioMode('webrtc');
+          console.log('[Audio] Received clear/stop message:', message);
           setPlaying(null);
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
           }
-          fallbackModeRef.current = false;
+          if (!FORCE_MEDIA_RECORDER) fallbackModeRef.current = false;
           providerRef.current?.reinitialize();
-          // Reset audio element completely
           if (audioRef.current) {
             audioRef.current.srcObject = null;
             audioRef.current.pause();
-            // Force reload for mobile browsers
             try {
               audioRef.current.load();
             } catch (e) {
@@ -813,8 +807,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           audioSetupRef.current = false;
           currentStreamRef.current = null;
           
-          // If peer connection is in a bad state, close and recreate it
-          if (pcRef.current) {
+          if (!FORCE_MEDIA_RECORDER && pcRef.current) {
             const connState = pcRef.current.connectionState;
             const sigState = pcRef.current.signalingState;
             if (connState === 'failed' || connState === 'disconnected' || 
@@ -1097,7 +1090,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       const lps = [0, 1].map(() => {
         const lp = ctx.createBiquadFilter();
         lp.type = 'lowpass';
-        lp.frequency.value = 5000;
+        lp.frequency.value = 3000;
         lp.Q.value = 0.707;
         return lp;
       });

@@ -37,9 +37,9 @@ type SignalingMessage =
 // Flip back to false when WebRTC is working reliably again.
 const FORCE_MEDIA_RECORDER = true;
 
-// Reduce mic sensitivity to weaken feedback loops. 0.35 ≈ −9 dB; close-mic
-// speech stays intelligible while room speaker bleed is significantly attenuated.
-const MIC_GAIN = 0.35;
+// Reduce mic sensitivity to weaken feedback loops. 0.1 ≈ −20 dB; aggressive
+// but necessary to break feedback loops when speaker and mic are in the same room.
+const MIC_GAIN = 0.1;
 
 type GainHandle = { stream: MediaStream; dispose: () => void };
 
