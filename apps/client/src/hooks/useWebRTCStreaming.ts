@@ -37,18 +37,25 @@ type SignalingMessage =
 // Flip back to false when WebRTC is working reliably again.
 const FORCE_MEDIA_RECORDER = true;
 
-// Reduce mic sensitivity to weaken feedback loops. 0.5 = −6 dB; close-mic
-// speech stays intelligible while room speaker bleed is halved each round-trip.
-const MIC_GAIN = 0.1;
+// Reduce mic sensitivity to weaken feedback loops. 0.35 ≈ −9 dB; close-mic
+// speech stays intelligible while room speaker bleed is significantly attenuated.
+const MIC_GAIN = 0.35;
 
 type GainHandle = { stream: MediaStream; dispose: () => void };
 
-function applyMicGain(raw: MediaStream): GainHandle | null {
+async function applyMicGain(raw: MediaStream): Promise<GainHandle | null> {
   try {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return null;
     const ctx: AudioContext = new AudioCtx();
-    if (ctx.state === 'suspended') ctx.resume();
+    try { await ctx.resume(); } catch {
+      try { ctx.close(); } catch {}
+      return null;
+    }
+    if (ctx.state !== 'running') {
+      try { ctx.close(); } catch {}
+      return null;
+    }
     const src = ctx.createMediaStreamSource(raw);
     const gain = ctx.createGain();
     gain.gain.value = MIC_GAIN;
@@ -278,7 +285,7 @@ export const useWebRTCStreaming = (
 
     streamRef.current = stream;
     micGainRef.current?.dispose();
-    const gh = applyMicGain(stream);
+    const gh = await applyMicGain(stream);
     micGainRef.current = gh;
     startMediaRecorder(gh?.stream ?? stream);
     console.log('[Streaming] Started with MediaRecorder (default mode)');

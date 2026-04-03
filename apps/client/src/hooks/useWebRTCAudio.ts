@@ -50,7 +50,7 @@ const CONNECT_TIMEOUT_MS = 5000;
 export const useWebRTCAudio = (wsEndpoint: string) => {
   const [playing, setPlaying] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
-  const [audioMode, setAudioMode] = useState<'webrtc' | 'mediarecorder'>('webrtc');
+  const [audioMode, setAudioMode] = useState<'webrtc' | 'mediarecorder'>(FORCE_MEDIA_RECORDER ? 'mediarecorder' : 'webrtc');
   const [queueInfo, setQueueInfo] = useState<QueueInfo>({
     queue: [],
     currentSpeaker: null,
@@ -64,16 +64,15 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const audioSetupRef = useRef(false);
   const currentStreamRef = useRef<MediaStream | null>(null);
   const providerRef = useRef<MediaProvider | null>(null);
-  const fallbackModeRef = useRef(false);
+  const fallbackModeRef = useRef(FORCE_MEDIA_RECORDER);
   const gotTrackForSpeakerRef = useRef(false);
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestedWebRTCRef = useRef(false);
 
-  // Anti-screech output filter: filters incoming WebRTC streams through a
-  // bandpass (80 Hz – 4 kHz) before they reach the room speakers.
-  // We route via createMediaStreamSource → filters → MediaStreamDestination
-  // so the audio element receives an already-filtered MediaStream.
-  // (createMediaElementSource doesn't reliably capture srcObject/WebRTC audio.)
+  // Anti-screech output filter for WebRTC streams: bandpass (80 Hz – 5 kHz)
+  // via createMediaStreamSource → filters → MediaStreamDestination.
+  // The filtered stream is set on the <audio> element's srcObject so the
+  // element only plays filtered audio for WebRTC paths.
   const outputCtxRef = useRef<AudioContext | null>(null);
   const filterInputRef = useRef<BiquadFilterNode | null>(null);
   const filteredStreamRef = useRef<MediaStream | null>(null);
@@ -724,9 +723,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
         } else if (data.type === 'from') {
           setPlaying(data.name || 'Speaker');
-          if (FORCE_MEDIA_RECORDER) {
-            switchToBinaryMode();
-          } else {
+          if (!FORCE_MEDIA_RECORDER) {
             gotTrackForSpeakerRef.current = false;
             if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = setTimeout(() => {
@@ -829,9 +826,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           }
         } else if (message.startsWith('FROM')) {
           setPlaying(message.slice(4));
-          if (FORCE_MEDIA_RECORDER) {
-            switchToBinaryMode();
-          } else {
+          if (!FORCE_MEDIA_RECORDER) {
             gotTrackForSpeakerRef.current = false;
             if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = setTimeout(() => {
@@ -978,6 +973,16 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     if (outputCtxRef.current?.state === 'suspended') {
       outputCtxRef.current.resume().catch(() => {});
     }
+
+    if (FORCE_MEDIA_RECORDER && audioRef.current) {
+      if (!providerRef.current) {
+        const fmt = pickPlaybackMime();
+        providerRef.current = new MediaProvider(fmt);
+        providerRef.current.attach(audioRef.current);
+      }
+      fallbackModeRef.current = true;
+      console.log('[Audio] MediaRecorder pipeline ready');
+    }
     
     setTimeout(() => {
       const ws = wsRef.current;
@@ -1069,65 +1074,46 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     }
   }, []);
 
-  // Two independent anti-screech filter chains on the same AudioContext:
+  // Anti-screech filter chain for WebRTC streams only.
+  // createMediaStreamSource → highpass(80) → lowpass(5k) × 2 → MediaStreamDestination
+  // Connected per-speaker in ontrack; dest.stream is set on the <audio>
+  // element's srcObject so the element only ever plays filtered audio.
   //
-  // Chain A (WebRTC): createMediaStreamSource → hp_a → lp_a × 3 → dest_a
-  //   Connected per-speaker in ontrack; dest_a.stream is set on the <audio>
-  //   element's srcObject so the element only ever plays filtered audio.
-  //
-  // Chain B (MSE / element output): createMediaElementSource → hp_b → lp_b × 3 → ctx.destination
-  //   Captures whatever the <audio> element outputs (MSE content, or the
-  //   already-filtered WebRTC stream) and routes it through a second filter
-  //   pass to the speakers.  For MSE this is the ONLY filter pass; for WebRTC
-  //   it's a harmless second pass that makes rolloff steeper.
+  // MSE / MediaRecorder binary audio plays through the <audio> element directly
+  // (no Web Audio capture) — createMediaElementSource would permanently hijack
+  // the element output and break MSE playback when the AudioContext suspends.
   useEffect(() => {
-    const el = audioRef.current;
     if (outputCtxRef.current) return;
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       const ctx: AudioContext = new AudioCtx();
 
-      // --- helper: build a highpass(80) → lowpass(3k) × 3 chain ---
-      const buildChain = () => {
-        const hp = ctx.createBiquadFilter();
-        hp.type = 'highpass';
-        hp.frequency.value = 80;
-        hp.Q.value = 0.707;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 80;
+      hp.Q.value = 0.707;
 
-        const lps = [0, 1, 2].map(() => {
-          const lp = ctx.createBiquadFilter();
-          lp.type = 'lowpass';
-          lp.frequency.value = 3000;
-          lp.Q.value = 0.707;
-          return lp;
-        });
+      const lps = [0, 1].map(() => {
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 5000;
+        lp.Q.value = 0.707;
+        return lp;
+      });
 
-        hp.connect(lps[0]);
-        lps[0].connect(lps[1]);
-        lps[1].connect(lps[2]);
-        return { input: hp, output: lps[2] };
-      };
+      hp.connect(lps[0]);
+      lps[0].connect(lps[1]);
 
-      // Chain A — WebRTC streams (connected in ontrack)
-      const chainA = buildChain();
       const dest = ctx.createMediaStreamDestination();
-      chainA.output.connect(dest);
-      filterInputRef.current = chainA.input;
+      lps[1].connect(dest);
+      filterInputRef.current = hp;
       filteredStreamRef.current = dest.stream;
 
-      // Chain B — element output (MSE / fallback binary audio)
-      if (el) {
-        const chainB = buildChain();
-        const elSource = ctx.createMediaElementSource(el);
-        elSource.connect(chainB.input);
-        chainB.output.connect(ctx.destination);
-      }
-
       outputCtxRef.current = ctx;
-      console.log('[AntiScreech] Dual filter chains ready');
+      console.log('[AntiScreech] WebRTC filter chain ready');
     } catch (e) {
-      console.warn('[AntiScreech] Failed to set up filter chains:', e);
+      console.warn('[AntiScreech] Failed to set up filter chain:', e);
     }
   }, []);
 
