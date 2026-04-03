@@ -29,10 +29,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     reorderUser,
     moveUserToPosition,
     setQueueSortMode,
-    forceMediaRecorderFallback,
-    forceWebRTC,
     setDefaultAudioMode,
-    audioMode,
   } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
   
   const [queueOpen, setQueueOpen] = useState(false);
@@ -130,48 +127,6 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
             <span>Skip speaker (S)</span>
           </div>
         </button>
-        {/* Switch current speaker: MediaRecorder / WebRTC */}
-        {listening && playing && (
-          <div className="flex flex-col gap-1.5 items-center">
-            <span className="text-sm text-gray-500">Switch current speaker:</span>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className={clsx(
-                  'px-3 py-1.5 rounded-md text-sm font-medium transition-colors border',
-                  audioMode === 'webrtc'
-                    ? 'bg-slate-500 hover:bg-slate-600 text-white border-slate-600'
-                    : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                )}
-                disabled={audioMode === 'mediarecorder'}
-                onClick={forceMediaRecorderFallback}
-                title={audioMode === 'webrtc' ? 'Force MediaRecorder' : 'Already using MediaRecorder'}
-              >
-                <span className="flex items-center gap-1.5">
-                  <Icon icon="tabler:record" className="w-4 h-4" />
-                  MediaRecorder
-                </span>
-              </button>
-              <button
-                type="button"
-                className={clsx(
-                  'px-3 py-1.5 rounded-md text-sm font-medium transition-colors border',
-                  audioMode === 'mediarecorder'
-                    ? 'bg-blue-500 hover:bg-blue-600 text-white border-blue-600'
-                    : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                )}
-                disabled={audioMode === 'webrtc'}
-                onClick={forceWebRTC}
-                title={audioMode === 'mediarecorder' ? 'Switch to WebRTC' : 'Already using WebRTC'}
-              >
-                <span className="flex items-center gap-1.5">
-                  <Icon icon="tabler:antenna" className="w-4 h-4" />
-                  WebRTC
-                </span>
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Hint who we're hearing */}
