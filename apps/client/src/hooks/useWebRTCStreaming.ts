@@ -229,7 +229,7 @@ export const useWebRTCStreaming = (
     recorder.ondataavailable = (e: BlobEvent) => {
       if (e.data?.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(e.data);
     };
-    recorder.start(500);
+    recorder.start(250);
     mediaRecorderRef.current = recorder;
     fallbackModeRef.current = true;
   }, []);

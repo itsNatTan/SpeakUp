@@ -744,14 +744,15 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         } else if (data.type === 'force-webrtc' && !FORCE_MEDIA_RECORDER) {
           switchBackToWebRTC();
         } else if (data.type === 'clear') {
-          console.log('[Audio] Received clear message - resetting audio pipeline');
+          console.log('[Audio] Received clear message');
           setPlaying(null);
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
           }
           if (FORCE_MEDIA_RECORDER) {
-            providerRef.current?.reinitialize();
+            // Don't rebuild the MSE pipeline — it stays ready for the next speaker's data.
+            // rebuild() revokes the blob URL, causing ERR_FILE_NOT_FOUND if called rapidly.
           } else {
             setAudioMode('webrtc');
             fallbackModeRef.current = false;
@@ -798,7 +799,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
             fallbackTimerRef.current = null;
           }
           if (FORCE_MEDIA_RECORDER) {
-            providerRef.current?.reinitialize();
+            // Don't rebuild — same as JSON clear above.
           } else {
             setAudioMode('webrtc');
             fallbackModeRef.current = false;

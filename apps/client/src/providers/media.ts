@@ -39,8 +39,8 @@ export class MediaProvider {
   private startedPlayback = false;
   private destroyed = false;
 
-  // mobile-friendly prebuffer target (tune 0.2–0.6s)
-  private PREBUFFER_SEC = 0.4;
+  // mobile-friendly prebuffer target (tune 0.1–0.6s)
+  private PREBUFFER_SEC = 0.2;
   // keep ~2s before currentTime to allow small seeks/gaps when evicting
   private KEEP_TAIL_SEC = 2.0;
   // single retry flag for QuotaExceeded
