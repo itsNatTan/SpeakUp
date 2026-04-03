@@ -33,6 +33,10 @@ type SignalingMessage =
   | { type: 'update-priority'; priority: number }
   | { type: 'error'; error: string };
 
+// When true, skip WebRTC entirely and always use MediaRecorder for sending.
+// Flip back to false when WebRTC is working reliably again.
+const FORCE_MEDIA_RECORDER = true;
+
 // Reduce mic sensitivity to weaken feedback loops. 0.5 = −6 dB; close-mic
 // speech stays intelligible while room speaker bleed is halved each round-trip.
 const MIC_GAIN = 0.1;
@@ -402,7 +406,7 @@ export const useWebRTCStreaming = (
           fallbackToMediaRecorder();
         }
 
-        if (data.type === 'force-webrtc') {
+        if (data.type === 'force-webrtc' && !FORCE_MEDIA_RECORDER) {
           stopMediaRecorderAndUseWebRTC();
         }
 

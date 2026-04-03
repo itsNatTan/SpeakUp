@@ -37,6 +37,10 @@ export type QueueInfo = {
   sortMode?: 'fifo' | 'priority';
 };
 
+// When true, skip WebRTC entirely and always receive via MediaRecorder binary.
+// Flip back to false when WebRTC is working reliably again.
+const FORCE_MEDIA_RECORDER = true;
+
 const MAX_RECONNECT_ATTEMPTS = 50;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
@@ -662,7 +666,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         }
       }, HEARTBEAT_INTERVAL_MS);
 
-      if (!pcRef.current) {
+      if (!FORCE_MEDIA_RECORDER && !pcRef.current) {
         setupPeerConnection();
         console.log('[WebRTC] Peer connection initialized on socket open');
       }
@@ -709,23 +713,27 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       try {
         const data = JSON.parse(event.data);
         
-        if (data.type === 'offer') {
+        if (data.type === 'offer' && !FORCE_MEDIA_RECORDER) {
           console.log('[WebRTC] Received offer from server', {
             hasSdp: !!data.sdp,
             sdpType: data.sdp?.type,
             from: data.from || 'unknown',
           });
           await handleOffer(data.sdp);
-        } else if (data.type === 'ice-candidate' && pcRef.current) {
+        } else if (data.type === 'ice-candidate' && pcRef.current && !FORCE_MEDIA_RECORDER) {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
         } else if (data.type === 'from') {
           setPlaying(data.name || 'Speaker');
-          gotTrackForSpeakerRef.current = false;
-          if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
-          fallbackTimerRef.current = setTimeout(() => {
-            if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
-            fallbackTimerRef.current = null;
-          }, 500);
+          if (FORCE_MEDIA_RECORDER) {
+            switchToBinaryMode();
+          } else {
+            gotTrackForSpeakerRef.current = false;
+            if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+            fallbackTimerRef.current = setTimeout(() => {
+              if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
+              fallbackTimerRef.current = null;
+            }, 500);
+          }
         } else if (data.type === 'queue-update' || data.type === 'queue-status') {
           setQueueInfo({
             queue: data.queue || [],
@@ -734,7 +742,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
             queueSize: data.queueSize || 0,
             sortMode: data.sortMode || 'fifo',
           });
-        } else if (data.type === 'force-webrtc') {
+        } else if (data.type === 'force-webrtc' && !FORCE_MEDIA_RECORDER) {
           switchBackToWebRTC();
         } else if (data.type === 'clear') {
           setAudioMode('webrtc');
@@ -821,12 +829,16 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
           }
         } else if (message.startsWith('FROM')) {
           setPlaying(message.slice(4));
-          gotTrackForSpeakerRef.current = false;
-          if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
-          fallbackTimerRef.current = setTimeout(() => {
-            if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
-            fallbackTimerRef.current = null;
-          }, 500);
+          if (FORCE_MEDIA_RECORDER) {
+            switchToBinaryMode();
+          } else {
+            gotTrackForSpeakerRef.current = false;
+            if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+            fallbackTimerRef.current = setTimeout(() => {
+              if (!gotTrackForSpeakerRef.current) switchToBinaryMode();
+              fallbackTimerRef.current = null;
+            }, 500);
+          }
         } else {
           // Log unexpected messages for debugging
           console.log('[WebRTC] Received unexpected message:', message.substring(0, 100));
@@ -974,8 +986,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         const fmt = pickPlaybackMime();
         if (fmt) ws.send(`FORMAT ${fmt}`);
         
-        // Ensure peer connection exists (should already be created in onopen)
-        if (!pcRef.current) {
+        if (!FORCE_MEDIA_RECORDER && !pcRef.current) {
           setupPeerConnection();
           console.log('[WebRTC] Peer connection created after LISTEN (fallback)');
         }
