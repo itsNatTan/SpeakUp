@@ -30,6 +30,8 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     moveUserToPosition,
     setQueueSortMode,
     setDefaultAudioMode,
+    setAudioPipelineMode,
+    audioPipelineMode,
   } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
   
   const [queueOpen, setQueueOpen] = useState(false);
@@ -92,6 +94,30 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
       <RoomInfo roomCode={roomCode} timeRemaining={timeRemaining} />
       <hr className="w-96 mx-auto" />
       <div className="flex flex-col gap-y-4 justify-center items-center h-96">
+        <div className="flex gap-2">
+          <button
+            className={clsx(
+              'px-3 py-1 rounded text-sm font-semibold',
+              audioPipelineMode === 'live'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-200 text-gray-700',
+            )}
+            onClick={() => setAudioPipelineMode('live')}
+          >
+            Live
+          </button>
+          <button
+            className={clsx(
+              'px-3 py-1 rounded text-sm font-semibold',
+              audioPipelineMode === 'prerecord'
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-200 text-gray-700',
+            )}
+            onClick={() => setAudioPipelineMode('prerecord')}
+          >
+            Prerecord
+          </button>
+        </div>
         <button
           className={clsx(
             'w-40 h-40 rounded-full text-white font-bold',

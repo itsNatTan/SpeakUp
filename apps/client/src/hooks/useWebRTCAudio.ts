@@ -50,6 +50,7 @@ const CONNECT_TIMEOUT_MS = 5000;
 export const useWebRTCAudio = (wsEndpoint: string) => {
   const [playing, setPlaying] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
+  const [audioPipelineMode, setAudioPipelineModeState] = useState<'live' | 'prerecord'>('live');
   const [audioMode, setAudioMode] = useState<'webrtc' | 'mediarecorder'>(FORCE_MEDIA_RECORDER ? 'mediarecorder' : 'webrtc');
   const [queueInfo, setQueueInfo] = useState<QueueInfo>({
     queue: [],
@@ -85,6 +86,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasListeningRef = useRef(false);
   const shouldReconnectRef = useRef(true);
+  const audioPipelineModeRef = useRef<'live' | 'prerecord'>('live');
 
   // Detect device types for specific handling (used throughout the hook)
   // iOS Safari with "Request Desktop Website" reports Mac-like UA (no "iPhone") - use platform + touch as fallback
@@ -670,6 +672,10 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         console.log('[WebRTC] Peer connection initialized on socket open');
       }
 
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(`AUDIO_PIPELINE ${audioPipelineModeRef.current}`);
+      }
+
       if (wasListeningRef.current) {
         console.log('[WS] Reconnected — restoring listening state');
 
@@ -686,6 +692,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         gotTrackForSpeakerRef.current = false;
 
         if (ws.readyState === WebSocket.OPEN) {
+          ws.send(`AUDIO_PIPELINE ${audioPipelineModeRef.current}`);
           ws.send('LISTEN');
           const fmt = pickPlaybackMime();
           if (fmt) ws.send(`FORMAT ${fmt}`);
@@ -946,6 +953,33 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     }
   }, []);
 
+  const setAudioPipelineMode = useCallback((mode: 'live' | 'prerecord') => {
+    setAudioPipelineModeState(mode);
+    audioPipelineModeRef.current = mode;
+    const ws = wsRef.current;
+    if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+      ws.send(`AUDIO_PIPELINE ${mode}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const onEnded = () => {
+      if (audioPipelineModeRef.current !== 'prerecord' || !listening) {
+        return;
+      }
+      const ws = wsRef.current;
+      if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+        ws.send('NEXT');
+      }
+    };
+
+    audio.addEventListener('ended', onEnded);
+    return () => audio.removeEventListener('ended', onEnded);
+  }, [listening]);
+
   // Open socket for queue monitoring (even when not listening)
   useEffect(() => {
     openSocket();
@@ -992,6 +1026,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     setTimeout(() => {
       const ws = wsRef.current;
       if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
+        ws.send(`AUDIO_PIPELINE ${audioPipelineModeRef.current}`);
         ws.send('LISTEN');
         const fmt = pickPlaybackMime();
         if (fmt) ws.send(`FORMAT ${fmt}`);
@@ -1167,6 +1202,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     forceMediaRecorderFallback,
     forceWebRTC,
     setDefaultAudioMode,
+    setAudioPipelineMode,
+    audioPipelineMode,
     audioMode,
   };
 };

@@ -5,6 +5,15 @@ import { analyticsService } from '../services/analytics.service';
 
 type BufferSlot = { start: Date | null; data: ArrayBuffer[] };
 type ClientInfo = { ws: WebSocket; priority: number; joinTime: Date; manualOrder?: number };
+type AudioPipelineMode = 'live' | 'prerecord';
+type PrerecordItem = {
+  key: string;
+  username: string;
+  priority: number;
+  recordedAt: number;
+  filename: string;
+  data: Buffer;
+};
 
 export class MessageHandler {
   private readonly sendQueue: SendQueue;
@@ -31,6 +40,11 @@ export class MessageHandler {
   // NEW: listener’s preferred playback container/codec (from “FORMAT …”)
   private preferredPlaybackMime: string | undefined;
   private defaultAudioMode: 'webrtc' | 'mediarecorder' = 'webrtc';
+  private audioPipelineMode: AudioPipelineMode = 'live';
+  private requestedAudioPipelineMode: AudioPipelineMode | null = null;
+  private prerecordQueue: PrerecordItem[] = [];
+  private prerecordPlaying = false;
+  private prerecordCurrentSpeaker: string | null = null;
 
   constructor(
     private readonly roomCode: string,
@@ -88,6 +102,14 @@ export class MessageHandler {
       }
       return () => {}; // no-op handler
     }
+    if (message.startsWith('AUDIO_PIPELINE ')) {
+      const mode = message.slice('AUDIO_PIPELINE '.length).trim().toLowerCase();
+      if (mode === 'live' || mode === 'prerecord') {
+        this.requestedAudioPipelineMode = mode;
+        return this.handleAudioPipelineMode;
+      }
+      return () => {};
+    }
 
     if (message.startsWith('RTS')) {
       const key = `${message.slice(3)}-${random.generateLowercase(5)}`;
@@ -106,6 +128,8 @@ export class MessageHandler {
         return this.handleQueueStatus;
       case 'PING':
         return this.handlePing;
+      case 'NEXT':
+        return this.handleNextPrerecord;
       default:
         return this.handleAudio;
     }
@@ -151,6 +175,72 @@ export class MessageHandler {
     this.storageBuffer[clientKey] = { start: null, data: [] };
     return { filename, data };
   }
+
+  private enqueuePrerecordItem(item: PrerecordItem) {
+    this.prerecordQueue.push(item);
+    this.prerecordQueue.sort((a, b) => {
+      if (b.priority !== a.priority) {
+        return b.priority - a.priority;
+      }
+      return a.recordedAt - b.recordedAt;
+    });
+  }
+
+  private removeClientCompletely(ws: WebSocket) {
+    const key = this.whichClient(ws);
+    this.sendQueue.removeClient(ws);
+    if (!key) return;
+    delete this.clientKeyMap[key];
+    delete this.clientInfoMap[key];
+    delete this.storageBuffer[key];
+  }
+
+  private playNextPrerecord = () => {
+    if (
+      this.audioPipelineMode !== 'prerecord' ||
+      !this.listener ||
+      this.listener.readyState !== WebSocket.OPEN
+    ) {
+      this.prerecordPlaying = false;
+      this.prerecordCurrentSpeaker = null;
+      return;
+    }
+
+    const next = this.prerecordQueue.shift();
+    if (!next) {
+      this.prerecordPlaying = false;
+      this.prerecordCurrentSpeaker = null;
+      try { this.listener.send(JSON.stringify({ type: 'clear' })); } catch {}
+      return;
+    }
+
+    this.prerecordPlaying = true;
+    this.prerecordCurrentSpeaker = next.username;
+    try {
+      this.listener.send(JSON.stringify({ type: 'clear' }));
+      this.listener.send(JSON.stringify({ type: 'from', name: next.username }));
+      this.listener.send(next.data);
+    } catch {
+      this.prerecordPlaying = false;
+      this.prerecordCurrentSpeaker = null;
+    }
+  };
+
+  private grantPrerecordCTS = (client: WebSocket) => {
+    const key = this.whichClient(client);
+    if (!key) return;
+    this.ensureBufferKey(key);
+    this.storageBuffer[key].start = new Date();
+    try {
+      client.send(
+        JSON.stringify({
+          type: 'cts',
+          recMime: this.preferredPlaybackMime ?? undefined,
+          defaultMode: 'mediarecorder',
+        }),
+      );
+    } catch {}
+  };
 
   // CENTRAL: CLEAR → FROM → (REC_MIME if any) → CTS
   private grantCTS = (client: WebSocket) => {
@@ -234,10 +324,16 @@ export class MessageHandler {
 
   public handleSTOP = (ws: WebSocket) => {
     if (this.listener === ws) {
-      try { 
-        this.listener.send(JSON.stringify({ type: 'clear' }));
-      } catch {}
+      try { this.listener.send(JSON.stringify({ type: 'clear' })); } catch {}
       this.listener = null;
+      this.prerecordPlaying = false;
+      this.prerecordCurrentSpeaker = null;
+
+      if (this.audioPipelineMode === 'prerecord') {
+        this.sendQueueUpdate();
+        return;
+      }
+
       this.isListenerDeafened = true;
 
       if (this.currentCtsKey) {
@@ -270,6 +366,39 @@ export class MessageHandler {
       
       // Send queue update to reflect the change
       this.sendQueueUpdate();
+      return;
+    }
+
+    if (this.audioPipelineMode === 'prerecord') {
+      const senderKey = this.whichClient(ws);
+      if (!senderKey) return;
+      const username = this.getClientName(ws) || 'Speaker';
+      const priority = this.getClientPriority(ws);
+
+      const file = this.flushBuffer(ws);
+      if (file) {
+        this.onIncomingFile?.(file.filename, file.data);
+        this.enqueuePrerecordItem({
+          key: senderKey,
+          username,
+          priority,
+          recordedAt: Date.now(),
+          filename: file.filename,
+          data: file.data,
+        });
+        analyticsService.recordEvent(this.roomCode, {
+          username,
+          eventType: 'speak_end',
+          timestamp: new Date(),
+          priority,
+        });
+      }
+
+      this.removeClientCompletely(ws);
+      this.sendQueueUpdate();
+      if (this.listener && this.listener.readyState === WebSocket.OPEN && !this.prerecordPlaying) {
+        this.playNextPrerecord();
+      }
       return;
     }
 
@@ -331,6 +460,10 @@ export class MessageHandler {
       this.instructorConnections.delete(ws);
       if (this.listener === ws) {
         this.listener = null;
+        this.prerecordPlaying = false;
+        if (this.audioPipelineMode === 'prerecord') {
+          return;
+        }
         this.isListenerDeafened = true; // Mark as deafened when listener disconnects
         if (this.currentCtsKey) {
           const senderWs = this.clientKeyMap[this.currentCtsKey];
@@ -345,6 +478,42 @@ export class MessageHandler {
         this.currentCtsKey = undefined;
       }
     });
+
+    if (this.audioPipelineMode === 'prerecord') {
+      const currentlyRecording = this.sendQueue.getAllClients();
+      for (const client of currentlyRecording) {
+        const key = this.whichClient(client);
+        if (!key) continue;
+        const username = this.getClientName(client) || 'Speaker';
+        const priority = this.getClientPriority(client);
+        const file = this.flushBuffer(client);
+        if (file) {
+          this.onIncomingFile?.(file.filename, file.data);
+          this.enqueuePrerecordItem({
+            key,
+            username,
+            priority,
+            recordedAt: Date.now(),
+            filename: file.filename,
+            data: file.data,
+          });
+          analyticsService.recordEvent(this.roomCode, {
+            username,
+            eventType: 'speak_end',
+            timestamp: new Date(),
+            priority,
+          });
+        }
+        if (client.readyState === WebSocket.OPEN) {
+          try { client.send(JSON.stringify({ type: 'stop', reason: 'blocked' })); } catch {}
+        }
+        this.removeClientCompletely(client);
+      }
+
+      this.sendQueueUpdate();
+      this.playNextPrerecord();
+      return;
+    }
 
     const nextClient = this.sendQueue.peekClient?.();
     if (nextClient && this.sendQueue.hasPriority(nextClient)) {
@@ -379,6 +548,15 @@ export class MessageHandler {
     const senderKey = this.whichClient(ws);
     if (!senderKey) { try { ws.send('NEED_RTS'); } catch {}; return; }
 
+    if (this.audioPipelineMode === 'prerecord') {
+      this.ensureBufferKey(senderKey);
+      if (!this.storageBuffer[senderKey].start) {
+        return;
+      }
+      this.storageBuffer[senderKey].data.push(data as ArrayBuffer);
+      return;
+    }
+
     const allowed =
       (this.currentCtsKey && senderKey === this.currentCtsKey) ||
       this.sendQueue.hasPriority(ws) ||
@@ -398,6 +576,15 @@ export class MessageHandler {
   };
 
   private handleSkip = (ws: WebSocket) => {
+    if (this.audioPipelineMode === 'prerecord') {
+      if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      this.prerecordPlaying = false;
+      this.playNextPrerecord();
+      return;
+    }
+
     if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) {
       console.log('[Server] Skip rejected - not listener or listener not open');
       return;
@@ -478,6 +665,13 @@ export class MessageHandler {
     this.sendQueueUpdate();
   };
 
+  private handleNextPrerecord = (ws: WebSocket) => {
+    if (this.audioPipelineMode !== 'prerecord') return;
+    if (this.listener !== ws || !this.listener || this.listener.readyState !== WebSocket.OPEN) return;
+    this.prerecordPlaying = false;
+    this.playNextPrerecord();
+  };
+
   private sendQueueUpdate = () => {
     const queueInfo = this.getQueueInfo();
     
@@ -498,6 +692,21 @@ export class MessageHandler {
   };
 
   private getQueueInfo = () => {
+    if (this.audioPipelineMode === 'prerecord') {
+      return {
+        queue: this.prerecordQueue.map((item) => ({
+          username: item.username,
+          key: item.key,
+          priority: item.priority,
+          joinTime: new Date(item.recordedAt),
+        })),
+        currentSpeaker: this.prerecordCurrentSpeaker,
+        currentSpeakerPriority: 0,
+        queueSize: this.prerecordQueue.length,
+        sortMode: this.queueSortMode,
+      };
+    }
+
     const queueClients = this.sendQueue.getAllClients();
     const queue: Array<{ username: string; key: string; priority: number; joinTime: Date }> = [];
     
@@ -538,6 +747,64 @@ export class MessageHandler {
 
   private handlePing = (ws: WebSocket) => {
     try { ws.send('PONG'); } catch {}
+  };
+
+  private handleAudioPipelineMode = (_ws: WebSocket) => {
+    const nextMode = this.requestedAudioPipelineMode;
+    this.requestedAudioPipelineMode = null;
+    if (!nextMode || nextMode === this.audioPipelineMode) {
+      return;
+    }
+
+    this.audioPipelineMode = nextMode;
+
+    // Force active/waiting students to re-request under the new mode.
+    const queuedClients = this.sendQueue.getAllClients();
+    for (const client of queuedClients) {
+      if (nextMode === 'prerecord') {
+        const key = this.whichClient(client);
+        if (key) {
+          const file = this.flushBuffer(client);
+          if (file) {
+            this.enqueuePrerecordItem({
+              key,
+              username: this.getClientName(client) || 'Speaker',
+              priority: this.getClientPriority(client),
+              recordedAt: Date.now(),
+              filename: file.filename,
+              data: file.data,
+            });
+          }
+        }
+      }
+      if (client.readyState === WebSocket.OPEN) {
+        try { client.send(JSON.stringify({ type: 'stop', reason: 'mode-switch' })); } catch {}
+      }
+      this.removeClientCompletely(client);
+    }
+
+    this.currentCtsKey = undefined;
+    this.lastSenderKey = undefined;
+    this.pausedSpeakerKey = undefined;
+    this.speakingPauseStartTime = undefined;
+
+    if (this.audioPipelineMode === 'prerecord') {
+      this.prerecordPlaying = false;
+      this.prerecordCurrentSpeaker = null;
+      if (this.listener && this.listener.readyState === WebSocket.OPEN) {
+        this.playNextPrerecord();
+      }
+      this.sendQueueUpdate();
+      return;
+    }
+
+    // Switching to live stops prerecord playback immediately.
+    this.prerecordPlaying = false;
+    this.prerecordCurrentSpeaker = null;
+    if (this.listener && this.listener.readyState === WebSocket.OPEN) {
+      try { this.listener.send(JSON.stringify({ type: 'clear' })); } catch {}
+    }
+    this.sendQueueUpdate();
   };
 
   private handleQueueStatus = (ws: WebSocket) => {
@@ -828,6 +1095,28 @@ export class MessageHandler {
         this.sendQueueUpdate();
       }
 
+      if (this.audioPipelineMode === 'prerecord') {
+        if (this.listener && this.listener.readyState === WebSocket.OPEN) {
+          if (ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify({ type: 'stop', reason: 'blocked' })); } catch {}
+          }
+          this.removeClientCompletely(ws);
+          this.sendQueueUpdate();
+          return;
+        }
+
+        this.grantPrerecordCTS(ws);
+        const username = signal.username || this.getClientName(ws) || 'Speaker';
+        analyticsService.recordEvent(this.roomCode, {
+          username,
+          eventType: 'speak_start',
+          timestamp: new Date(),
+          priority: this.getClientPriority(ws),
+        });
+        this.sendQueueUpdate();
+        return;
+      }
+
       const isFirst = this.sendQueue.hasPriority(ws);
       const hasListener = this.listener && this.listener.readyState === WebSocket.OPEN;
       if (isFirst && hasListener) {
@@ -981,6 +1270,28 @@ export class MessageHandler {
   private cleanupOnClose = (ws: WebSocket) => {
     const k = this.whichClient(ws);
     if (!k) return;
+
+    if (this.audioPipelineMode === 'prerecord') {
+      const file = this.flushBuffer(ws);
+      if (file) {
+        const username = this.getClientName(ws) || 'Speaker';
+        this.onIncomingFile?.(file.filename, file.data);
+        this.enqueuePrerecordItem({
+          key: k,
+          username,
+          priority: this.getClientPriority(ws),
+          recordedAt: Date.now(),
+          filename: file.filename,
+          data: file.data,
+        });
+      }
+      this.removeClientCompletely(ws);
+      this.sendQueueUpdate();
+      if (this.listener && this.listener.readyState === WebSocket.OPEN && !this.prerecordPlaying) {
+        this.playNextPrerecord();
+      }
+      return;
+    }
 
     const wasPriority = this.sendQueue.hasPriority(ws);
     const wasCurrentSpeaker = this.currentCtsKey === k || this.lastSenderKey === k;
