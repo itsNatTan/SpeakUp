@@ -6,6 +6,7 @@ import clsx from 'clsx';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import Analytics from '../components/Analytics';
+import DefaultModeModal from '../components/DefaultModeModal';
 import QueueManagement from '../components/QueueManagement';
 import RoomInfo from '../components/RoomInfo';
 import { useWebRTCAudio } from '../hooks/useWebRTCAudio';
@@ -30,19 +31,20 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     moveUserToPosition,
     setQueueSortMode,
     setDefaultAudioMode,
+    defaultAudioMode,
   } = useWebRTCAudio(`${WS_PROTOCOL}://${SERVER_HOST}/ws/${roomCode}`);
   
   const [queueOpen, setQueueOpen] = useState(false);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
+  const [defaultModeOpen, setDefaultModeOpen] = useState(false);
 
   const handleClick = useCallback(() => {
     if (listening) {
       stopListening();
     } else {
-      setDefaultAudioMode('mediarecorder');
       listen();
     }
-  }, [listen, listening, stopListening, setDefaultAudioMode]);
+  }, [listen, listening, stopListening]);
 
   const navigate = useNavigate();
   const [timeRemaining, setTimeRemaining] = useState(
@@ -143,6 +145,12 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
 
       {/* Queue Management, Analytics, and Settings - Stacked */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-3">
+        <DefaultModeModal
+          defaultMode={defaultAudioMode}
+          onDefaultModeChange={setDefaultAudioMode}
+          isOpen={defaultModeOpen}
+          onToggle={() => setDefaultModeOpen(!defaultModeOpen)}
+        />
         <QueueManagement
           queueInfo={queueInfo}
           onKickUser={kickUser}

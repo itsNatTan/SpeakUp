@@ -85,6 +85,18 @@ export class MessageHandler {
       const mode = message.slice('DEFAULT_MODE '.length).trim().toLowerCase();
       if (mode === 'mediarecorder' || mode === 'webrtc') {
         this.defaultAudioMode = mode;
+        if (this.currentCtsKey) {
+          const currentSpeakerWs = this.clientKeyMap[this.currentCtsKey];
+          if (currentSpeakerWs && currentSpeakerWs.readyState === WebSocket.OPEN) {
+            try {
+              currentSpeakerWs.send(
+                JSON.stringify({
+                  type: mode === 'mediarecorder' ? 'force-fallback' : 'force-webrtc',
+                }),
+              );
+            } catch {}
+          }
+        }
       }
       return () => {}; // no-op handler
     }

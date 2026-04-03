@@ -51,6 +51,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const [playing, setPlaying] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [audioMode, setAudioMode] = useState<'webrtc' | 'mediarecorder'>(FORCE_MEDIA_RECORDER ? 'mediarecorder' : 'webrtc');
+  const [defaultAudioMode, setDefaultAudioModeState] = useState<'webrtc' | 'mediarecorder'>('webrtc');
   const [queueInfo, setQueueInfo] = useState<QueueInfo>({
     queue: [],
     currentSpeaker: null,
@@ -85,6 +86,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wasListeningRef = useRef(false);
   const shouldReconnectRef = useRef(true);
+  const defaultAudioModeRef = useRef<'webrtc' | 'mediarecorder'>('webrtc');
 
   // Detect device types for specific handling (used throughout the hook)
   // iOS Safari with "Request Desktop Website" reports Mac-like UA (no "iPhone") - use platform + touch as fallback
@@ -670,6 +672,10 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         console.log('[WebRTC] Peer connection initialized on socket open');
       }
 
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(`DEFAULT_MODE ${defaultAudioModeRef.current}`);
+      }
+
       if (wasListeningRef.current) {
         console.log('[WS] Reconnected — restoring listening state');
 
@@ -940,6 +946,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   }, []);
 
   const setDefaultAudioMode = useCallback((mode: 'webrtc' | 'mediarecorder') => {
+    setDefaultAudioModeState(mode);
+    defaultAudioModeRef.current = mode;
     const ws = wsRef.current;
     if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
       ws.send(`DEFAULT_MODE ${mode}`);
@@ -1168,5 +1176,6 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     forceWebRTC,
     setDefaultAudioMode,
     audioMode,
+    defaultAudioMode,
   };
 };
