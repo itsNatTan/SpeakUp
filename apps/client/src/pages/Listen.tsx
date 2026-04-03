@@ -42,7 +42,7 @@ const ListenBody: React.FC<Props> = ({ roomCode, expiresAt }) => {
     if (listening) {
       stopListening();
     } else {
-      setDefaultAudioMode('webrtc');
+      setDefaultAudioMode('mediarecorder');
       listen();
     }
   }, [listen, listening, stopListening, setDefaultAudioMode]);

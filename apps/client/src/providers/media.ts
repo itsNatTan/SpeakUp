@@ -238,15 +238,9 @@ export class MediaProvider {
   private async rebuild() {
     if (this.destroyed) return;
 
-    // Detach old
-    try {
-      if (this.mediaSource?.readyState === 'open' && this.sourceBuffer && !this.sourceBuffer.updating) {
-        // Avoid endOfStream mid-session; it can lock appends on some mobiles.
-      }
-    } catch {}
-    if (this._sourceUrl) {
-      try { URL.revokeObjectURL(this._sourceUrl); } catch {}
-    }
+    // Don't revoke the old blob URL — the browser may still be loading it and
+    // revoking triggers ERR_FILE_NOT_FOUND.  The GC will collect it once the
+    // element's src is overwritten with the new URL below.
 
     // Create a fresh pipeline
     this.mediaSource = new MediaSource();

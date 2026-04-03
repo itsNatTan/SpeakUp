@@ -673,9 +673,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       if (wasListeningRef.current) {
         console.log('[WS] Reconnected — restoring listening state');
 
-        // Flush stale MSE/audio pipeline so new audio starts at the live edge
-        providerRef.current?.reinitialize();
         if (!FORCE_MEDIA_RECORDER) {
+          providerRef.current?.reinitialize();
           fallbackModeRef.current = false;
           if (audioRef.current) {
             audioRef.current.srcObject = null;
@@ -1004,7 +1003,8 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         }
       }
     }, 50); // Minimal delay - just to ensure socket is ready
-    audioRef.current?.play().catch(() => {});
+    // Don't call play() here — MediaProvider.maybeStartPlayback() handles it
+    // once enough data is buffered. Premature play() can cause element errors.
   }, [setupPeerConnection]);
 
   const stop = useCallback(() => {
