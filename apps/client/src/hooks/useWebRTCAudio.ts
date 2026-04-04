@@ -240,6 +240,16 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
 
   const requestedWebRTCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prerecordBlobUrlRef = useRef<string | null>(null);
+  const needsMseReattachRef = useRef(false);
+
+  const revokeBlobUrlSoon = useCallback((url: string) => {
+    // Defer revoke slightly so the media element/network stack can detach cleanly.
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }, 10_000);
+  }, []);
 
   const clearPrerecordBlobPlayback = useCallback(() => {
     const el = audioRef.current;
@@ -251,12 +261,11 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       } catch {}
     }
     if (prerecordBlobUrlRef.current) {
-      try {
-        URL.revokeObjectURL(prerecordBlobUrlRef.current);
-      } catch {}
+      revokeBlobUrlSoon(prerecordBlobUrlRef.current);
       prerecordBlobUrlRef.current = null;
+      needsMseReattachRef.current = true;
     }
-  }, []);
+  }, [revokeBlobUrlSoon]);
 
   const playPrerecordBlob = useCallback(async (payload: ArrayBuffer | Blob) => {
     const el = audioRef.current;
@@ -268,6 +277,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
 
     clearPrerecordBlobPlayback();
     prerecordBlobUrlRef.current = URL.createObjectURL(blob);
+    needsMseReattachRef.current = true;
     el.srcObject = null;
     el.src = prerecordBlobUrlRef.current;
     el.preload = 'auto';
@@ -782,8 +792,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         }
         if (!fallbackModeRef.current && !requestedWebRTCRef.current) switchToBinaryMode();
         if (providerRef.current && !requestedWebRTCRef.current) {
-          if (audioRef.current) {
+          if (audioRef.current && needsMseReattachRef.current) {
             providerRef.current.attach(audioRef.current);
+            needsMseReattachRef.current = false;
           }
           const ab = event.data instanceof ArrayBuffer
             ? event.data

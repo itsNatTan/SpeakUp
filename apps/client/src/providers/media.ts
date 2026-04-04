@@ -39,6 +39,7 @@ export class MediaProvider {
   private startedPlayback = false;
   private destroyed = false;
   private rebuilding = false;
+  private visibilityListenerBound = false;
 
   private PREBUFFER_SEC = 0.2;
   private KEEP_TAIL_SEC = 2.0;
@@ -93,18 +94,23 @@ export class MediaProvider {
 
   public attach(audioEl: HTMLMediaElement) {
     if (!this.mediaSource) throw new Error('No MediaSource');
-    this.attachingEl = audioEl;
     if (!this._sourceUrl) {
       this._sourceUrl = URL.createObjectURL(this.mediaSource);
     }
-    audioEl.src = this._sourceUrl;
+    this.attachingEl = audioEl;
+    if (audioEl.src !== this._sourceUrl) {
+      audioEl.src = this._sourceUrl;
+    }
     (audioEl as any).playsInline = true;
 
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && audioEl.paused && !audioEl.error) {
-        audioEl.play().catch(() => {});
-      }
-    });
+    if (!this.visibilityListenerBound) {
+      this.visibilityListenerBound = true;
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && this.attachingEl?.paused && !this.attachingEl.error) {
+          this.attachingEl.play().catch(() => {});
+        }
+      });
+    }
   }
 
   public async buffer(data: ArrayBuffer) {
