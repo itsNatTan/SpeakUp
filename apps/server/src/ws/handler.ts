@@ -178,12 +178,22 @@ export class MessageHandler {
 
   private enqueuePrerecordItem(item: PrerecordItem) {
     this.prerecordQueue.push(item);
-    this.prerecordQueue.sort((a, b) => {
-      if (b.priority !== a.priority) {
-        return b.priority - a.priority;
-      }
-      return a.recordedAt - b.recordedAt;
-    });
+    this.sortPrerecordQueue();
+  }
+
+  private sortPrerecordQueue() {
+    if (this.queueSortMode === 'priority') {
+      this.prerecordQueue.sort((a, b) => {
+        if (b.priority !== a.priority) {
+          return b.priority - a.priority;
+        }
+        return a.recordedAt - b.recordedAt;
+      });
+      return;
+    }
+
+    // FIFO mode: strict recording completion order.
+    this.prerecordQueue.sort((a, b) => a.recordedAt - b.recordedAt);
   }
 
   private removeClientCompletely(ws: WebSocket) {
@@ -765,17 +775,9 @@ export class MessageHandler {
       if (nextMode === 'prerecord') {
         const key = this.whichClient(client);
         if (key) {
-          const file = this.flushBuffer(client);
-          if (file) {
-            this.enqueuePrerecordItem({
-              key,
-              username: this.getClientName(client) || 'Speaker',
-              priority: this.getClientPriority(client),
-              recordedAt: Date.now(),
-              filename: file.filename,
-              data: file.data,
-            });
-          }
+          // Do NOT carry live pipeline audio into prerecord playback.
+          // Switching to prerecord should start with a clean recording queue.
+          this.storageBuffer[key] = { start: null, data: [] };
         }
       }
       if (client.readyState === WebSocket.OPEN) {
@@ -1346,6 +1348,13 @@ export class MessageHandler {
     }
 
     this.queueSortMode = mode;
+
+    // Prerecord queue has its own ordering and must follow selected mode too.
+    if (this.audioPipelineMode === 'prerecord') {
+      this.sortPrerecordQueue();
+      this.sendQueueUpdate();
+      return;
+    }
     
     // Get current speaker's WebSocket to exclude from sorting
     const currentSpeakerWs = this.currentCtsKey 
