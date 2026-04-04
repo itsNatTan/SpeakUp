@@ -103,11 +103,12 @@ const Room: React.FC = () => {
             'text-7xl flex justify-center items-center transition-colors',
             state === 'on' && 'bg-green-500',
             state === 'waiting' && 'bg-orange-500',
+            state === 'blocked' && 'bg-gray-500',
             state === 'off' && 'bg-blue-500',
           )}
           disabled={buttonDisabled}
           onClick={async () => {
-            if (state === 'off') {
+            if (state === 'off' || state === 'blocked') {
               try {
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 beginStream(stream);
@@ -122,6 +123,13 @@ const Room: React.FC = () => {
         >
           <Icon icon="tabler:microphone" />
         </button>
+
+        {state === 'blocked' && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+            <Icon icon="tabler:ban" className="w-5 h-5" />
+            <span>Recording blocked while instructor is speaking.</span>
+          </div>
+        )}
 
         <p className="text-sm opacity-70">
           WS: {connected ? 'connected' : 'connecting…'} • State: {state}

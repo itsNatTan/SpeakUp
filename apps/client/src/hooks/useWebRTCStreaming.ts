@@ -22,7 +22,7 @@ export type AudioConfig = {
   autoGainControl: boolean;
 };
 
-type StreamingState = 'off' | 'on' | 'waiting';
+type StreamingState = 'off' | 'on' | 'waiting' | 'blocked';
 
 type SignalingMessage =
   | { type: 'offer'; sdp: RTCSessionDescriptionInit }
@@ -491,6 +491,8 @@ export const useWebRTCStreaming = (
           cleanup();
           if (data.reason === 'paused') {
             setState('waiting');
+          } else if (data.reason === 'blocked') {
+            setState('blocked');
           } else {
             setState('off');
             wantSpeakRef.current = false;
