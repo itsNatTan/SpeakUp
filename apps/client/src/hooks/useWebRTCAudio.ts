@@ -967,13 +967,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
     if (!audio) return;
 
     const onEnded = () => {
-      if (audioPipelineModeRef.current !== 'prerecord' || !listening) {
-        return;
-      }
-      const ws = wsRef.current;
-      if (ws && isOpenRef.current && ws.readyState === WebSocket.OPEN) {
-        ws.send('NEXT');
-      }
+      // In prerecord mode we intentionally do NOT auto-advance.
+      // Instructor controls progression explicitly via SKIP.
+      if (audioPipelineModeRef.current === 'prerecord') setPlaying(null);
     };
 
     audio.addEventListener('ended', onEnded);

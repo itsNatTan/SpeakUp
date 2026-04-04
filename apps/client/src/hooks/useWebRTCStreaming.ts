@@ -107,6 +107,7 @@ export const useWebRTCStreaming = (
   const micGainRef = useRef<GainHandle | null>(null);
   const recorderChunksRef = useRef<Blob[]>([]);
   const sendFullBlobOnStopRef = useRef(false);
+  const prerecordCaptureRef = useRef(false);
   const pendingStopAfterRecorderRef = useRef(false);
   const pendingTeardownAfterRecorderRef = useRef(false);
   const isStoppingRecorderRef = useRef(false);
@@ -217,6 +218,7 @@ export const useWebRTCStreaming = (
     }
     recorderChunksRef.current = [];
     sendFullBlobOnStopRef.current = false;
+    prerecordCaptureRef.current = false;
     pendingStopAfterRecorderRef.current = false;
     pendingTeardownAfterRecorderRef.current = false;
     isStoppingRecorderRef.current = false;
@@ -460,6 +462,7 @@ export const useWebRTCStreaming = (
           try {
             const prerecordMode = data.audioPipeline === 'prerecord';
             if (prerecordMode) {
+              prerecordCaptureRef.current = true;
               let stream: MediaStream | null = streamFromUserGestureRef.current;
               streamFromUserGestureRef.current = null;
               if (!stream) {
@@ -475,9 +478,12 @@ export const useWebRTCStreaming = (
               micGainRef.current?.dispose();
               const gh = await applyMicGain(stream);
               micGainRef.current = gh;
-              startMediaRecorder(gh?.stream ?? stream, true);
-              console.log('[Streaming] Started prerecord capture (send full blob on stop)');
+              // Match live pipeline behavior by streaming chunks continuously.
+              // This avoids iPhone full-blob container incompatibilities in playback.
+              startMediaRecorder(gh?.stream ?? stream, false);
+              console.log('[Streaming] Started prerecord capture (chunked upload)');
             } else {
+              prerecordCaptureRef.current = false;
               await startWithMediaRecorderOnly();
             }
           } catch (err) {
@@ -597,6 +603,20 @@ export const useWebRTCStreaming = (
   const endStream = useCallback(() => {
     wantSpeakRef.current = false;
     const recorder = mediaRecorderRef.current;
+    if (
+      prerecordCaptureRef.current &&
+      recorder &&
+      recorder.state === 'recording'
+    ) {
+      isStoppingRecorderRef.current = true;
+      pendingStopAfterRecorderRef.current = true;
+      pendingTeardownAfterRecorderRef.current = true;
+      try { (recorder as any).requestData?.(); } catch {}
+      recorder.stop();
+      mediaRecorderRef.current = null;
+      setState('waiting');
+      return;
+    }
     if (
       sendFullBlobOnStopRef.current &&
       recorder &&
