@@ -15,6 +15,33 @@ function pickPlaybackMime(): string | undefined {
   return undefined;
 }
 
+function detectAudioMimeFromBytes(data: ArrayBuffer): string | undefined {
+  const bytes = new Uint8Array(data);
+  if (bytes.length >= 8) {
+    // MP4 boxes start with size (4 bytes) followed by "ftyp".
+    if (
+      bytes[4] === 0x66 &&
+      bytes[5] === 0x74 &&
+      bytes[6] === 0x79 &&
+      bytes[7] === 0x70
+    ) {
+      return 'audio/mp4';
+    }
+  }
+  if (bytes.length >= 4) {
+    // WebM / Matroska EBML magic.
+    if (
+      bytes[0] === 0x1a &&
+      bytes[1] === 0x45 &&
+      bytes[2] === 0xdf &&
+      bytes[3] === 0xa3
+    ) {
+      return 'audio/webm';
+    }
+  }
+  return undefined;
+}
+
 type SignalingMessage = 
   | { type: 'offer'; sdp: RTCSessionDescriptionInit }
   | { type: 'answer'; sdp: RTCSessionDescriptionInit }
@@ -212,6 +239,47 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
   }, []);
 
   const requestedWebRTCTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prerecordBlobUrlRef = useRef<string | null>(null);
+
+  const clearPrerecordBlobPlayback = useCallback(() => {
+    const el = audioRef.current;
+    if (el) {
+      el.pause();
+      el.removeAttribute('src');
+      try {
+        el.load();
+      } catch {}
+    }
+    if (prerecordBlobUrlRef.current) {
+      try {
+        URL.revokeObjectURL(prerecordBlobUrlRef.current);
+      } catch {}
+      prerecordBlobUrlRef.current = null;
+    }
+  }, []);
+
+  const playPrerecordBlob = useCallback(async (payload: ArrayBuffer | Blob) => {
+    const el = audioRef.current;
+    if (!el) return;
+
+    const blob = payload instanceof Blob
+      ? payload
+      : new Blob([payload], { type: detectAudioMimeFromBytes(payload) });
+
+    clearPrerecordBlobPlayback();
+    prerecordBlobUrlRef.current = URL.createObjectURL(blob);
+    el.srcObject = null;
+    el.src = prerecordBlobUrlRef.current;
+    el.preload = 'auto';
+    el.autoplay = true;
+    el.setAttribute('playsinline', 'true');
+    el.setAttribute('webkit-playsinline', 'true');
+    try {
+      await el.play();
+    } catch (err) {
+      console.warn('[Prerecord] Playback start failed:', err);
+    }
+  }, [clearPrerecordBlobPlayback]);
 
   const switchBackToWebRTC = useCallback(() => {
     const el = audioRef.current;
@@ -708,8 +776,15 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
 
     ws.onmessage = async (event) => {
       if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+        if (audioPipelineModeRef.current === 'prerecord') {
+          await playPrerecordBlob(event.data);
+          return;
+        }
         if (!fallbackModeRef.current && !requestedWebRTCRef.current) switchToBinaryMode();
         if (providerRef.current && !requestedWebRTCRef.current) {
+          if (audioRef.current) {
+            providerRef.current.attach(audioRef.current);
+          }
           const ab = event.data instanceof ArrayBuffer
             ? event.data
             : await (event.data as Blob).arrayBuffer();
@@ -754,6 +829,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         } else if (data.type === 'clear') {
           console.log('[Audio] Received clear message');
           setPlaying(null);
+          if (audioPipelineModeRef.current === 'prerecord') {
+            clearPrerecordBlobPlayback();
+          }
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
@@ -802,6 +880,9 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         if (message === 'CLEAR' || message === 'STOP') {
           console.log('[Audio] Received clear/stop message:', message);
           setPlaying(null);
+          if (audioPipelineModeRef.current === 'prerecord') {
+            clearPrerecordBlobPlayback();
+          }
           if (fallbackTimerRef.current) {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = null;
@@ -1168,6 +1249,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
       if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
       providerRef.current?.dispose();
       providerRef.current = null;
+      clearPrerecordBlobPlayback();
       try { webrtcSourceRef.current?.disconnect(); } catch {}
       webrtcSourceRef.current = null;
       filterInputRef.current = null;
@@ -1184,7 +1266,7 @@ export const useWebRTCAudio = (wsEndpoint: string) => {
         pcRef.current = null;
       }
     };
-  }, []);
+  }, [clearPrerecordBlobPlayback]);
 
   return { 
     ref: audioRef, 

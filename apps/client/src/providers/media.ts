@@ -92,10 +92,11 @@ export class MediaProvider {
   }
 
   public attach(audioEl: HTMLMediaElement) {
-    if (this._sourceUrl) return;
     if (!this.mediaSource) throw new Error('No MediaSource');
     this.attachingEl = audioEl;
-    this._sourceUrl = URL.createObjectURL(this.mediaSource);
+    if (!this._sourceUrl) {
+      this._sourceUrl = URL.createObjectURL(this.mediaSource);
+    }
     audioEl.src = this._sourceUrl;
     (audioEl as any).playsInline = true;
 
