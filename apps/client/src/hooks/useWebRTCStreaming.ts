@@ -109,6 +109,7 @@ export const useWebRTCStreaming = (
   const sendFullBlobOnStopRef = useRef(false);
   const pendingStopAfterRecorderRef = useRef(false);
   const pendingTeardownAfterRecorderRef = useRef(false);
+  const isStoppingRecorderRef = useRef(false);
 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -218,6 +219,7 @@ export const useWebRTCStreaming = (
     sendFullBlobOnStopRef.current = false;
     pendingStopAfterRecorderRef.current = false;
     pendingTeardownAfterRecorderRef.current = false;
+    isStoppingRecorderRef.current = false;
     fallbackModeRef.current = false;
     teardownCapture();
   }, [teardownCapture]);
@@ -252,6 +254,9 @@ export const useWebRTCStreaming = (
       const shouldTeardownAfterRecorder = pendingTeardownAfterRecorderRef.current;
       pendingStopAfterRecorderRef.current = false;
       pendingTeardownAfterRecorderRef.current = false;
+      isStoppingRecorderRef.current = false;
+      fallbackModeRef.current = false;
+      mediaRecorderRef.current = null;
 
       if (!sendFullBlobOnStopRef.current) {
         recorderChunksRef.current = [];
@@ -277,6 +282,9 @@ export const useWebRTCStreaming = (
       }
       if (shouldTeardownAfterRecorder) {
         teardownCapture();
+      }
+      if (shouldSendStopAfterRecorder) {
+        setState('off');
       }
       sendFullBlobOnStopRef.current = false;
     };
@@ -559,6 +567,9 @@ export const useWebRTCStreaming = (
 
   /** Call with a stream acquired on user gesture (required for iPhone). If omitted, mic is requested when CTS arrives (desktop). */
   const beginStream = useCallback((streamFromUserGesture?: MediaStream) => {
+    if (isStoppingRecorderRef.current) {
+      return;
+    }
     if (streamFromUserGesture) {
       streamFromUserGestureRef.current = streamFromUserGesture;
     }
@@ -589,12 +600,14 @@ export const useWebRTCStreaming = (
       recorder &&
       recorder.state === 'recording'
     ) {
+      isStoppingRecorderRef.current = true;
       pendingStopAfterRecorderRef.current = true;
       pendingTeardownAfterRecorderRef.current = true;
       try { (recorder as any).requestData?.(); } catch {}
       recorder.stop();
       mediaRecorderRef.current = null;
-      setState('off');
+      // Keep UI non-off while recorder flushes final blob and sends STOP.
+      setState('waiting');
       return;
     }
     send({ type: 'stop' });

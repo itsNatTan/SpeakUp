@@ -1097,15 +1097,8 @@ export class MessageHandler {
       }
 
       if (this.audioPipelineMode === 'prerecord') {
-        if (this.listener && this.listener.readyState === WebSocket.OPEN) {
-          if (ws.readyState === WebSocket.OPEN) {
-            try { ws.send(JSON.stringify({ type: 'stop', reason: 'blocked' })); } catch {}
-          }
-          this.removeClientCompletely(ws);
-          this.sendQueueUpdate();
-          return;
-        }
-
+        // In prerecord mode, speakers should still be allowed to record while
+        // a listener is connected. Their final blob is enqueued on STOP/close.
         this.grantPrerecordCTS(ws);
         const username = signal.username || this.getClientName(ws) || 'Speaker';
         analyticsService.recordEvent(this.roomCode, {
