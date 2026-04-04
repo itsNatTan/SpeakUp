@@ -107,6 +107,8 @@ export const useWebRTCStreaming = (
   const micGainRef = useRef<GainHandle | null>(null);
   const recorderChunksRef = useRef<Blob[]>([]);
   const sendFullBlobOnStopRef = useRef(false);
+  const pendingStopAfterRecorderRef = useRef(false);
+  const pendingTeardownAfterRecorderRef = useRef(false);
 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -190,17 +192,7 @@ export const useWebRTCStreaming = (
     iceTransportPolicy: isiPhone || isAndroid ? 'relay' : 'all',
   };
 
-  const cleanup = useCallback(() => {
-    // Stop MediaRecorder fallback if active
-    if (mediaRecorderRef.current?.state === 'recording') {
-      try { (mediaRecorderRef.current as any).requestData?.(); } catch {}
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current = null;
-    }
-    recorderChunksRef.current = [];
-    sendFullBlobOnStopRef.current = false;
-    fallbackModeRef.current = false;
-
+  const teardownCapture = useCallback(() => {
     micGainRef.current?.dispose();
     micGainRef.current = null;
 
@@ -214,6 +206,21 @@ export const useWebRTCStreaming = (
 
     pendingOfferRef.current = false;
   }, []);
+
+  const cleanup = useCallback(() => {
+    // Stop MediaRecorder fallback if active
+    if (mediaRecorderRef.current?.state === 'recording') {
+      try { (mediaRecorderRef.current as any).requestData?.(); } catch {}
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    recorderChunksRef.current = [];
+    sendFullBlobOnStopRef.current = false;
+    pendingStopAfterRecorderRef.current = false;
+    pendingTeardownAfterRecorderRef.current = false;
+    fallbackModeRef.current = false;
+    teardownCapture();
+  }, [teardownCapture]);
 
   const send = useCallback((msg: SignalingMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -241,18 +248,37 @@ export const useWebRTCStreaming = (
       if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(e.data);
     };
     recorder.onstop = () => {
+      const shouldSendStopAfterRecorder = pendingStopAfterRecorderRef.current;
+      const shouldTeardownAfterRecorder = pendingTeardownAfterRecorderRef.current;
+      pendingStopAfterRecorderRef.current = false;
+      pendingTeardownAfterRecorderRef.current = false;
+
       if (!sendFullBlobOnStopRef.current) {
         recorderChunksRef.current = [];
+        if (shouldSendStopAfterRecorder && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'stop' }));
+        }
+        if (shouldTeardownAfterRecorder) {
+          teardownCapture();
+        }
         return;
       }
       const chunks = recorderChunksRef.current;
       recorderChunksRef.current = [];
-      if (!chunks.length) return;
-      const type = recorder.mimeType || mime || 'audio/webm';
-      const fullBlob = new Blob(chunks, { type });
-      if (fullBlob.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(fullBlob);
+      if (chunks.length) {
+        const type = recorder.mimeType || mime || 'audio/webm';
+        const fullBlob = new Blob(chunks, { type });
+        if (fullBlob.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(fullBlob);
+        }
       }
+      if (shouldSendStopAfterRecorder && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'stop' }));
+      }
+      if (shouldTeardownAfterRecorder) {
+        teardownCapture();
+      }
+      sendFullBlobOnStopRef.current = false;
     };
     if (sendFullBlobOnStopRef.current) {
       recorder.start();
@@ -380,6 +406,8 @@ export const useWebRTCStreaming = (
       }
       recorderChunksRef.current = [];
       sendFullBlobOnStopRef.current = false;
+      pendingStopAfterRecorderRef.current = false;
+      pendingTeardownAfterRecorderRef.current = false;
       fallbackModeRef.current = false;
       pcRef.current?.close();
       pcRef.current = null;
@@ -555,6 +583,20 @@ export const useWebRTCStreaming = (
 
   const endStream = useCallback(() => {
     wantSpeakRef.current = false;
+    const recorder = mediaRecorderRef.current;
+    if (
+      sendFullBlobOnStopRef.current &&
+      recorder &&
+      recorder.state === 'recording'
+    ) {
+      pendingStopAfterRecorderRef.current = true;
+      pendingTeardownAfterRecorderRef.current = true;
+      try { (recorder as any).requestData?.(); } catch {}
+      recorder.stop();
+      mediaRecorderRef.current = null;
+      setState('off');
+      return;
+    }
     send({ type: 'stop' });
     cleanup();
     setState('off');
