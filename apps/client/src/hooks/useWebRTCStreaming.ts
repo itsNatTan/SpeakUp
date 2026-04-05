@@ -268,6 +268,10 @@ export const useWebRTCStreaming = (
         if (shouldTeardownAfterRecorder) {
           teardownCapture();
         }
+        if (shouldSendStopAfterRecorder) {
+          // Prerecord chunked stop path: return to idle immediately after flush.
+          setState('off');
+        }
         return;
       }
       const chunks = recorderChunksRef.current;
