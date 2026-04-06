@@ -81,6 +81,8 @@ const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const CONNECT_TIMEOUT_MS = 5000;
+const RECORDER_TIMESLICE_MS = 100;
+const STOP_RECORDER_GRACE_MS = 120;
 
 export const useWebRTCStreaming = (
   wsEndpoint: string,
@@ -268,9 +270,10 @@ export const useWebRTCStreaming = (
         if (shouldTeardownAfterRecorder) {
           teardownCapture();
         }
-        if (shouldSendStopAfterRecorder) {
-          // Prerecord chunked stop path: return to idle immediately after flush.
+        if (shouldSendStopAfterRecorder && prerecordCaptureRef.current) {
+          // Prerecord stop path should always return to idle (blue) after flush.
           setState('off');
+          prerecordCaptureRef.current = false;
         }
         return;
       }
@@ -297,7 +300,7 @@ export const useWebRTCStreaming = (
     if (sendFullBlobOnStopRef.current) {
       recorder.start();
     } else {
-      recorder.start(250);
+      recorder.start(RECORDER_TIMESLICE_MS);
     }
     mediaRecorderRef.current = recorder;
     fallbackModeRef.current = true;
@@ -616,9 +619,14 @@ export const useWebRTCStreaming = (
       pendingStopAfterRecorderRef.current = true;
       pendingTeardownAfterRecorderRef.current = true;
       try { (recorder as any).requestData?.(); } catch {}
-      recorder.stop();
+      setTimeout(() => {
+        try {
+          if (recorder.state === 'recording') recorder.stop();
+        } catch {}
+      }, STOP_RECORDER_GRACE_MS);
       mediaRecorderRef.current = null;
-      setState('waiting');
+      // Prerecord stop should return to idle immediately.
+      setState('off');
       return;
     }
     if (
@@ -630,7 +638,11 @@ export const useWebRTCStreaming = (
       pendingStopAfterRecorderRef.current = true;
       pendingTeardownAfterRecorderRef.current = true;
       try { (recorder as any).requestData?.(); } catch {}
-      recorder.stop();
+      setTimeout(() => {
+        try {
+          if (recorder.state === 'recording') recorder.stop();
+        } catch {}
+      }, STOP_RECORDER_GRACE_MS);
       mediaRecorderRef.current = null;
       // Keep UI non-off while recorder flushes final blob and sends STOP.
       setState('waiting');
