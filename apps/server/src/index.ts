@@ -20,9 +20,9 @@ import { registerWebsocketForServer } from './ws/server';
 const app = new Hono();
 
 const allowed = new Set<string>([
-  'https://main.d1zxivhorbkhbd.amplifyapp.com',
   'https://speakupfyp.space',
   'https://www.speakupfyp.space',
+  'https://speakup-bfy.pages.dev/',
   'https://localhost:443',
   'https://192.168.31.151',
 ])
